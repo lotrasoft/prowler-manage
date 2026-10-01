@@ -568,7 +568,29 @@ function renderMspSettings() {
   const ar = m.cert?.autoRenew || {};
   $('#msp-s-renew').textContent = ar.lastError ? `failed: ${ar.lastError}` : ar.ready ? 'ready' : ar.ready === false ? `not ready: ${(ar.reasons || []).join('; ')}` : 'not checked yet';
   $('#btn-msp-renew').disabled = !!m.busy;
+  const urls = (m.redirectUris || []).filter((u) => !u.includes('/oauth2/nativeclient'));
+  $('#msp-s-urls').replaceChildren(...(urls.length ? urls.flatMap((u, i) => [i ? h('br') : '', u]) : ['not known yet']));
+  const here = `${location.origin}/auth/callback`;
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+  const registered = urls.some((u) => u === here || u === location.origin || u === `${location.origin}/`) || (local && urls.some((u) => u.startsWith('http://localhost')));
+  $('#btn-msp-reapprove').classList.toggle('primary', !registered);
+  if (!registered && !$('#msp-reapprove-status').textContent) {
+    $('#msp-reapprove-status').textContent = `${location.origin} is not registered yet; Re-approve from here to use Approve now from this address.`;
+  }
 }
+
+let mspReapproveStop = null;
+$('#btn-msp-reapprove').addEventListener('click', () => {
+  mspReapproveStop?.();
+  $('#btn-msp-reapprove').disabled = true;
+  mspReapproveStop = popupSession({ kind: 'msp-app-update' }, async (s) => {
+    if (renderSession(s, $('#msp-reapprove-status'), $('#msp-reapprove-steps'), () => 'MSP app updated')) {
+      $('#btn-msp-reapprove').disabled = false;
+      await loadSettings();
+      renderMspSettings();
+    } else if (s.status === 'error') $('#btn-msp-reapprove').disabled = false;
+  });
+});
 
 $('#btn-msp-create').addEventListener('click', () => {
   mspCreateStop?.();

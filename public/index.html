@@ -178,9 +178,13 @@
           <div class="kv"><span>Your tenant</span><span id="msp-s-tenant"></span></div>
           <div class="kv"><span>Certificate</span><span id="msp-s-cert"></span></div>
           <div class="kv"><span>Auto-renewal</span><span id="msp-s-renew"></span></div>
+          <div class="kv"><span>Return addresses</span><span id="msp-s-urls" class="small" style="text-align:right"></span></div>
           <div class="connect-row" style="margin-top:10px">
             <button type="button" class="btn" id="btn-msp-renew">Renew certificate now</button>
+            <button type="button" class="btn" id="btn-msp-reapprove" title="Sign in to your MSP tenant again to add this address as a return address, refresh the app's permissions and re-check its certificate self-renewal">Re-approve MSP app</button>
+            <span id="msp-reapprove-status" class="muted"></span>
           </div>
+          <ul id="msp-reapprove-steps" class="steps"></ul>
         </div>
       </div>
 

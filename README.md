@@ -87,7 +87,13 @@ Instead of an SSH tunnel, you can publish the manager itself through your tunnel
 2. **Use https.** Microsoft sign-ins return to the address in your browser automatically, which must be https (Cloudflare provides that) or localhost. Nothing to configure.
 
 From a Cloudflare hostname, the Microsoft sign-ins work like this:
-- **Approve now (MSP app):** returns to the Cloudflare hostname. The first time, the manager adds that address to your MSP app's redirect URIs itself (the app can edit its own registration), then waits about 20 seconds for Microsoft to pick it up.
+- **Return addresses are registered when the MSP app is created.** The app gets the browser's address plus `/auth/callback` (e.g. `https://prowler-manager.example.com/auth/callback`), as well as `http://localhost:4500/auth/callback`. **Approve now** never changes the app; it uses one of those addresses.
+- **Using the manager from another address later** (a new hostname): open **Settings → MSP app → Re-approve MSP app** from that address. It signs you in to your MSP tenant and then:
+  - adds the address as a return URL
+  - refreshes the app's permissions to the current list
+  - re-checks the app's self-ownership and certificate self-renewal permission
+
+  Settings lists the registered return addresses. **Approve now** from an unregistered address tells you to do this.
 - **Create MSP app** and **Create a dedicated app** sign in with Microsoft's Graph Command Line Tools client, which only allows `localhost`. From a Cloudflare hostname they use **device-code sign-in** instead: the popup shows a short code to enter at Microsoft's device login page. If your organization's Conditional Access blocks device-code sign-in, do these one-off steps from `http://localhost:4500` (on the server, or through `ssh -L 4500:localhost:4500 <server>`).
 - **Consent links** emailed to customers are unaffected.
 

@@ -30,33 +30,18 @@ export async function resolveTenant(domainOrId) {
 }
 
 /**
- * Make sure `uri` is a registered return address of the MSP app (Microsoft only redirects to those).
- * The app edits its own registration (it owns itself and has Application.ReadWrite.OwnedBy in the
- * MSP tenant). Returns true if the address was added just now.
+ * Return URLs registered on the MSP app. Stored when the app is created or re-approved; for apps
+ * set up by older versions they're read once from Microsoft (read-only) and cached.
  */
-export async function ensureRedirectUri(uri) {
+export async function registeredRedirects() {
   const m = config();
-  if ((m.redirectUris || []).includes(uri)) return false;
+  if (m.redirectUris?.length) return m.redirectUris;
   const app = new EntraApp({ tenantId: m.tenantId, clientId: m.clientId });
-  let token;
-  try {
-    token = await app.token(await currentCert());
-  } catch (e) {
-    throw new Error(`Could not sign in as the MSP app to register ${uri}: ${e.message}`);
-  }
-  const current = (await app.graph(token, 'GET', `/applications/${m.appObjectId}?$select=web`)).web?.redirectUris || [];
-  let added = false;
-  if (!current.includes(uri)) {
-    try {
-      await app.graph(token, 'PATCH', `/applications/${m.appObjectId}`, { web: { redirectUris: [...current, uri] } });
-    } catch (e) {
-      throw new Error(`Could not add ${uri} to the MSP app's redirect URIs (${e.message}). Add it by hand: Entra admin center → App registrations → ${m.displayName} → Authentication → Web → Redirect URIs`);
-    }
-    added = true;
-  }
+  const token = await app.token(await currentCert());
+  const uris = (await app.graph(token, 'GET', `/applications/${m.appObjectId}?$select=web`)).web?.redirectUris || [];
   const s = store.getSettings();
-  store.saveSettings({ ...s, msp: { ...s.msp, redirectUris: [...new Set([...current, uri])] } });
-  return added;
+  store.saveSettings({ ...s, msp: { ...s.msp, redirectUris: uris } });
+  return uris;
 }
 
 /** The link a customer's Global Admin opens to approve the MSP app in their tenant. */

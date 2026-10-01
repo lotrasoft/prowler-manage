@@ -33,6 +33,7 @@ const g = (scope) => `https://graph.microsoft.com/${scope}`;
 const SCOPES = {
   direct: ['openid', 'profile', g('User.Read'), g('Application.ReadWrite.All'), g('RoleManagement.ReadWrite.Directory')].join(' '),
   'msp-app': ['openid', 'profile', g('User.Read'), g('Application.ReadWrite.All'), g('AppRoleAssignment.ReadWrite.All')].join(' '),
+  'msp-app-update': ['openid', 'profile', g('User.Read'), g('Application.ReadWrite.All'), g('AppRoleAssignment.ReadWrite.All')].join(' '),
   // Delegated permissions the MSP app declares; consented in step 1, used to assign Global Reader.
   msp: ['openid', 'profile', g('User.Read'), g('RoleManagement.ReadWrite.Directory')].join(' '),
 };
@@ -71,6 +72,9 @@ const OWNED_BY = 'Application.ReadWrite.OwnedBy';
 const sessions = new Map();
 const SESSION_TTL = 2 * 3600000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Where our own apps (MSP app, dedicated apps) send the browser back to, under the manager's address. */
+export const CALLBACK_PATH = '/auth/callback';
 
 export function localRedirect(port = process.env.PORT || 4500) {
   return `http://localhost:${port}`;
@@ -142,13 +146,20 @@ export async function startSession({ kind = 'direct', name, customer, instanceId
   const settings = store.getSettings();
   const s = { id: crypto.randomBytes(16).toString('hex'), kind, name: name || 'Prowler', status: 'signing-in', steps: [], createdAt: Date.now() };
   s.verifier = crypto.randomBytes(32).toString('base64url');
-  s.redirect = resolveReturnUrl(origin, host);
+  // base: the manager's address in the browser. redirect: return URL for our own apps (registered on
+  // them). signInRedirect: where the sign-in itself returns (Graph CLI Tools only accepts the bare
+  // http://localhost, so its sign-in uses the base address).
+  s.base = resolveReturnUrl(origin, host);
+  s.redirect = s.base + CALLBACK_PATH;
+  s.signInRedirect = s.base;
   s.signInClientId = settings.setupClientId;
   s.authority = 'organizations';
   const extra = { prompt: 'select_account' };
 
   if (kind === 'msp-app') {
     if (settings.msp?.clientId) throw new Error('The MSP app is already set up');
+  } else if (kind === 'msp-app-update') {
+    if (!settings.msp?.clientId) throw new Error('The MSP app is not set up yet');
   } else if (kind === 'msp') {
     const m = msp.config();
     s.tenantId = await msp.resolveTenant(customer);
@@ -162,23 +173,27 @@ export async function startSession({ kind = 'direct', name, customer, instanceId
     s.authority = s.tenantId;
     s.clientId = m.clientId;
     delete extra.prompt; // the admin just signed in on the consent page; reuse that session
-    // Microsoft only returns to registered addresses: make sure this one is on the MSP app.
-    if (await msp.ensureRedirectUri(s.redirect)) {
-      // A newly added address takes a little while to reach the consent endpoint.
-      await sleep(20000);
+    // Microsoft only returns to addresses registered on the MSP app (when it was created, or with
+    // Settings → Re-approve MSP app). Apps from older versions were registered without the path.
+    const registered = await msp.registeredRedirects();
+    const pick = [s.base + CALLBACK_PATH, s.base, `${s.base}/`].find((u) => registered.includes(u));
+    if (!pick) {
+      throw new Error(`${s.base} is not a return address of the MSP app. Open Settings → Re-approve MSP app from this address once to register it, or use the manager from a registered address (${registered.filter((u) => !u.includes('nativeclient')).join(', ') || 'none'}).`);
     }
+    s.redirect = pick;
+    s.signInRedirect = pick;
   }
   sessions.set(s.id, s);
 
   // Public address + Graph Command Line Tools (localhost-only): sign in with a device code.
-  if (kind !== 'msp' && !isLocalUrl(s.redirect) && s.signInClientId === DEFAULT_SETUP_CLIENT) {
+  if (kind !== 'msp' && !isLocalUrl(s.base) && s.signInClientId === DEFAULT_SETUP_CLIENT) {
     await startDeviceCode(s);
     return { id: s.id, authUrl: `/onboarding.html?id=${s.id}` };
   }
   const params = new URLSearchParams({
     client_id: s.signInClientId,
     response_type: 'code',
-    redirect_uri: s.redirect,
+    redirect_uri: s.signInRedirect,
     response_mode: 'query',
     scope: SCOPES[kind],
     state: `${s.id}.signin`,
@@ -216,7 +231,7 @@ async function startDeviceCode(s) {
 }
 
 async function pollDeviceCode(s, interval, deadline) {
-  const next = { direct: directSetup, 'msp-app': createMspApp }[s.kind];
+  const next = { direct: directSetup, 'msp-app': createMspApp, 'msp-app-update': updateMspApp }[s.kind];
   while (Date.now() < deadline) {
     await sleep(interval * 1000);
     if (s.status !== 'device-code') return; // abandoned or failed
@@ -313,7 +328,7 @@ export async function handleRedirect(query) {
 
   if (phase === 'signin' && s.status === 'signing-in' && query.code) {
     s.status = 'working';
-    const next = { direct: directSetup, 'msp-app': createMspApp, msp: mspApproved }[s.kind];
+    const next = { direct: directSetup, 'msp-app': createMspApp, 'msp-app-update': updateMspApp, msp: mspApproved }[s.kind];
     exchangeCode(s, query.code)
       .then(() => next(s))
       .catch((e) => {
@@ -344,7 +359,7 @@ async function exchangeCode(s, code) {
     client_id: s.signInClientId,
     grant_type: 'authorization_code',
     code,
-    redirect_uri: s.redirect,
+    redirect_uri: s.signInRedirect,
     code_verifier: s.verifier,
     scope: SCOPES[s.kind],
   };
@@ -429,15 +444,63 @@ async function assignGlobalReader(s, spId) {
 
 // ---------- msp-app: one-time, in the MSP tenant ----------
 
-async function createMspApp(s) {
-  await organization(s);
-  step(s, `MSP tenant: ${s.orgName} (${s.tenantDomain})`);
+/** Return URLs registered on the MSP app: localhost and the address it was set up from. */
+function mspReturnUrls(s, existing = []) {
+  return [...new Set([...existing, localRedirect() + CALLBACK_PATH, s.redirect, msp.NATIVE_REDIRECT])];
+}
+
+/** Prowler's permissions plus the delegated ones the MSP app uses for "Approve now". */
+async function mspPermissions(s) {
   const { access, graphSp } = await resourceAccess(s, { includeOwnedBy: false });
   const graphEntry = access.find((a) => a.resourceAppId === GRAPH_APP_ID);
   for (const value of MSP_DELEGATED) {
     const scope = graphSp.oauth2PermissionScopes.find((p) => p.value === value);
     if (scope) graphEntry.resourceAccess.push({ id: scope.id, type: 'Scope' });
   }
+  return { access, graphSp };
+}
+
+/** Self-ownership + Application.ReadWrite.OwnedBy (MSP tenant only), for certificate self-renewal. */
+async function ensureSelfRenewal(s, appObjectId, spId, graphSp) {
+  try {
+    await graph(s, 'POST', `/applications/${appObjectId}/owners/$ref`, { '@odata.id': `https://graph.microsoft.com/v1.0/directoryObjects/${spId}` });
+  } catch (e) {
+    if (!/already exist/i.test(e.message)) throw e;
+  }
+  const ownedBy = graphSp.appRoles.find((r) => r.value === OWNED_BY);
+  try {
+    await graph(s, 'POST', `/servicePrincipals/${graphSp.id}/appRoleAssignedTo`, { principalId: spId, resourceId: graphSp.id, appRoleId: ownedBy.id });
+  } catch (e) {
+    if (!/already exist/i.test(e.message)) throw e;
+  }
+}
+
+/**
+ * Settings → Re-approve MSP app: bring the existing MSP app up to date. Adds this browser address as
+ * a return URL, refreshes the permission list, and re-checks self-ownership and OwnedBy.
+ */
+async function updateMspApp(s) {
+  const m = store.getSettings().msp;
+  await organization(s);
+  if (s.signInTenantId !== m.tenantId) throw new Error(`Sign in to the MSP tenant (${m.tenantDomain}); you signed in to ${s.tenantDomain}`);
+  const app = await graph(s, 'GET', `/applications/${m.appObjectId}?$select=id,appId,displayName,web`);
+  const { access, graphSp } = await mspPermissions(s);
+  const redirectUris = mspReturnUrls(s, app.web?.redirectUris || []);
+  await graph(s, 'PATCH', `/applications/${app.id}`, { requiredResourceAccess: access, web: { redirectUris } });
+  step(s, `Updated "${app.displayName}": return address ${s.redirect}, permissions refreshed`);
+  const sp = await graph(s, 'GET', `/servicePrincipals(appId='${app.appId}')?$select=id`);
+  await ensureSelfRenewal(s, app.id, sp.id, graphSp);
+  step(s, 'Checked self-ownership and certificate self-renewal permission');
+  const settings = store.getSettings();
+  store.saveSettings({ ...settings, msp: { ...settings.msp, redirectUris } });
+  step(s, 'Customers that approved earlier keep working; ones approved from now on get the refreshed permissions');
+  done(s);
+}
+
+async function createMspApp(s) {
+  await organization(s);
+  step(s, `MSP tenant: ${s.orgName} (${s.tenantDomain})`);
+  const { access, graphSp } = await mspPermissions(s);
 
   const material = createCertificate('prowler-msp', store.getSettings().certLifetimeMonths);
   const sealed = await sealCertificate(material);
@@ -448,13 +511,11 @@ async function createMspApp(s) {
     notes: 'Prowler Microsoft 365 security scanning (read-only), operated by prowler-manage. Customers approve it through admin consent.',
     requiredResourceAccess: access,
     keyCredentials: [{ type: 'AsymmetricX509Cert', usage: 'Verify', key: material.certDer, displayName: `prowler-manage ${material.thumbprint}` }],
-    web: { redirectUris: [...new Set([localRedirect(), s.redirect, msp.NATIVE_REDIRECT])] },
+    web: { redirectUris: mspReturnUrls(s) },
   });
   step(s, `Created multi-tenant app "${displayName}" (${app.appId}) with certificate ${material.thumbprint.slice(0, 8)}…`);
   const sp = await graph(s, 'POST', '/servicePrincipals', { appId: app.appId });
-  await graph(s, 'POST', `/applications/${app.id}/owners/$ref`, { '@odata.id': `https://graph.microsoft.com/v1.0/directoryObjects/${sp.id}` });
-  const ownedBy = graphSp.appRoles.find((r) => r.value === OWNED_BY);
-  await graph(s, 'POST', `/servicePrincipals/${graphSp.id}/appRoleAssignedTo`, { principalId: sp.id, resourceId: graphSp.id, appRoleId: ownedBy.id });
+  await ensureSelfRenewal(s, app.id, sp.id, graphSp);
   step(s, 'Allowed the app to renew its own certificate (owner of itself + Application.ReadWrite.OwnedBy, in your tenant only)');
 
   const settings = store.getSettings();
@@ -466,7 +527,7 @@ async function createMspApp(s) {
       tenantId: s.signInTenantId,
       tenantDomain: s.tenantDomain,
       displayName,
-      redirectUris: [...new Set([localRedirect(), s.redirect, msp.NATIVE_REDIRECT])],
+      redirectUris: mspReturnUrls(s),
       createdBy: s.signedInAs,
       createdAt: new Date().toISOString(),
       cert: { appObjectId: app.id, current: { ...sealed, verified: true, verifiedAt: new Date().toISOString() } },

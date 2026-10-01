@@ -22,7 +22,9 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 
 // OAuth redirects from Microsoft sign-in / admin consent land on the root URL.
-app.get('/', async (req, res, next) => {
+// (/auth/callback for our own apps; / for the Graph Command Line Tools sign-in, which only accepts
+// the bare http://localhost.)
+app.get(['/', onboarding.CALLBACK_PATH], async (req, res, next) => {
   if (!req.query.state) return next();
   try {
     res.redirect(await onboarding.handleRedirect(req.query));
