@@ -40,7 +40,7 @@ body {
 }
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
+  padding: 8px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
 }
 .brand { display: flex; gap: 10px; align-items: center; font-weight: 600; font-size: 16px; color: var(--primary); }
 .brand img { filter: brightness(0) saturate(100%) invert(22%) sepia(77%) saturate(1485%) hue-rotate(220deg) brightness(96%) contrast(97%); }
