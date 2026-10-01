@@ -267,8 +267,9 @@ cat <<EOF
   Logs:     journalctl -u prowler-manage -f
   Data:     $STATE_DIR      Master key: $KEY_FILE   ← back these up together
 EOF
-if [[ -n "$REPO" && ! -s "$ETC_DIR/github-token" ]]; then
+if [[ -n "$REPO" && ! -s "$ETC_DIR/github-token" ]] \
+   && ! curl -fsS -o /dev/null -H 'User-Agent: prowler-manage-installer' "$GITHUB_API/repos/$REPO" 2>/dev/null; then
   echo
-  warn "No GitHub token stored. If $REPO is private, the Updates button can't reach it;"
+  warn "$REPO isn't readable without a token (private?), so the Updates button can't reach it;"
   warn "re-run with --github-token-file <file> (a fine-grained token with read-only Contents access)."
 fi

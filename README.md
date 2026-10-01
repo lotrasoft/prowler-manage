@@ -124,7 +124,7 @@ The **Updates** button in the header shows where this copy was installed from: t
 4. The installer stages the new version beside the old one and swaps it in. If the new version doesn't start, it rolls back to the previous one, and the dialog reports the failure.
 5. The updater always installs the **head of the recorded branch**, whatever the request file says.
 
-For a **private repository**, the service needs a GitHub token. Create a fine-grained token with read-only **Contents** access to this repository, then:
+The repository is public, so no credentials are needed. If you use a **private fork**, give the service a fine-grained GitHub token with read-only **Contents** access:
 
 ```bash
 sudo ./deploy/install.sh --github-token-file ./token.txt     # stored as /etc/prowler-manage/github-token (0640)
