@@ -1,0 +1,11 @@
+# Installs the latest Prowler Manager from GitHub. Runs as root, started by prowler-manage-update.path
+# when the manager requests an update. See deploy/update.sh.
+[Unit]
+Description=Prowler Manager self-update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/prowler-manage/deploy/update.sh
+TimeoutStartSec=15min

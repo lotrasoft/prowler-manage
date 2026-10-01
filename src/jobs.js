@@ -13,6 +13,11 @@ export function isBusy(instanceId) {
   return busy.has(instanceId);
 }
 
+/** Keys of everything currently running (instance ids, 'msp', 'manager'). */
+export function busyKeys() {
+  return [...busy];
+}
+
 /**
  * Run `fn(log, job)` in the background for an instance. Only one job per instance at a time.
  * `busyState` is written to instance.state while running; on failure state becomes "error".

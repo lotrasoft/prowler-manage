@@ -1,0 +1,10 @@
+# Watches for update requests from the (unprivileged) Prowler Manager service.
+[Unit]
+Description=Prowler Manager self-update trigger
+
+[Path]
+PathExists=/var/lib/prowler-manage/update/request.json
+Unit=prowler-manage-update.service
+
+[Install]
+WantedBy=multi-user.target

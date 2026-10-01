@@ -11,7 +11,8 @@ import * as renewal from './renewal.js';
 import * as onboarding from './onboarding.js';
 import * as msp from './msp.js';
 import { masterKeySource, checkMasterKey } from './secrets.js';
-import { startJob, getJob, isBusy } from './jobs.js';
+import { startJob, getJob, isBusy, busyKeys } from './jobs.js';
+import * as updater from './updater.js';
 
 const PORT = Number(process.env.PORT || 4500);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -514,6 +515,39 @@ app.delete('/api/instances/:id', wrap(async (req, res) => {
   res.status(202).json({ jobId: job.id });
 }));
 
+// ---------- Self-update ----------
+
+app.get('/api/update/source', wrap(async (req, res) => {
+  res.json(await updater.source());
+}));
+
+app.get('/api/update/check', wrap(async (req, res) => {
+  try {
+    res.json(await updater.check());
+  } catch (e) {
+    throw new HttpError(502, `Update check failed: ${e.message}`);
+  }
+}));
+
+app.get('/api/version', wrap(async (req, res) => {
+  res.json(await updater.currentVersion());
+}));
+
+app.post('/api/update', wrap(async (req, res) => {
+  const c = await updater.check().catch((e) => {
+    throw new HttpError(502, `Update check failed: ${e.message}`);
+  });
+  if (!c.updateAvailable) throw new HttpError(409, 'Already up to date');
+  if (!c.canUpdate) throw new HttpError(409, c.reason || 'Update not possible');
+  const running = busyKeys();
+  if (running.length) {
+    // A restart would kill installs, renewals or approvals in progress.
+    throw new HttpError(409, `Wait for the ${running.length} running operation(s) to finish first`);
+  }
+  const job = startJob('manager', `Update Prowler Manager to ${c.latest}`, null, (log) => updater.update(log, { shutdown }));
+  res.status(202).json({ jobId: job.id, from: c.current, to: c.latest });
+}));
+
 app.get('/api/jobs/:id', wrap(async (req, res) => {
   const job = getJob(req.params.id);
   if (!job) throw new HttpError(404, 'Job not found (the manager may have restarted)');
@@ -535,6 +569,22 @@ for (const inst of store.listInstances()) {
 
 renewal.startScheduler();
 
+function shutdown() {
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 3000).unref();
+}
+
+// After a self-update the new process starts while the old one is still releasing the port.
+let listenAttempts = 0;
+function onListenError(e) {
+  if (e.code === 'EADDRINUSE' && ++listenAttempts <= 20) {
+    setTimeout(() => server.listen(PORT, HOST), 1000);
+    return;
+  }
+  console.error(`Cannot listen on ${HOST}:${PORT}: ${e.message}`);
+  process.exit(1);
+}
+
 const server = app.listen(PORT, HOST, async () => {
   console.log(`Prowler Manager running at http://${HOST}:${PORT}`);
   try {
@@ -545,13 +595,13 @@ const server = app.listen(PORT, HOST, async () => {
   const docker = await prowler.dockerCheck();
   for (const problem of docker.problems) console.warn(`WARNING: ${problem}`);
 });
+server.on('error', onListenError);
 
 // systemd / Ctrl+C: stop accepting requests and exit. Prowler stacks keep running; jobs that were
 // in flight are marked interrupted on the next start (see above) and resume with Launch.
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => {
     console.log(`${sig} received, shutting down`);
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 3000).unref();
+    shutdown();
   });
 }

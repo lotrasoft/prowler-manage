@@ -14,6 +14,7 @@
       <span>Prowler Manager</span>
     </div>
     <div class="actions">
+      <button class="btn ghost" id="btn-updates">Updates<span class="dot hidden" id="update-dot" title="Update available"></span></button>
       <button class="btn ghost" id="btn-settings">Settings</button>
       <button class="btn primary" id="btn-add">+ New instance</button>
     </div>
@@ -231,6 +232,22 @@
     <ul id="approve-steps" class="steps small"></ul>
     <div class="dlg-actions">
       <button class="btn primary" onclick="closeDialog('dlg-approve')">Close</button>
+    </div>
+  </dialog>
+
+  <!-- Self-update -->
+  <dialog id="dlg-update" class="wide">
+    <h2>Prowler Manager updates</h2>
+    <div class="kv"><span>Installed from</span><span><a id="upd-url" target="_blank" rel="noopener"></a> <span class="muted small" id="upd-branch"></span></span></div>
+    <div class="kv"><span>Installed version</span><code id="upd-current">…</code></div>
+    <div class="kv"><span>Latest on GitHub</span><code id="upd-latest">…</code></div>
+    <p id="upd-status" class="small muted" style="margin:12px 0 6px"></p>
+    <ul id="upd-commits" class="commits small"></ul>
+    <p id="upd-last" class="small muted"></p>
+    <div class="dlg-actions">
+      <button class="btn ghost" id="upd-check">Check again</button>
+      <button class="btn ghost" onclick="closeDialog('dlg-update')">Close</button>
+      <button class="btn primary" id="upd-apply" disabled>Update now</button>
     </div>
   </dialog>
 

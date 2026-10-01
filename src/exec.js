@@ -1,9 +1,9 @@
 // Child-process helper that streams output into a job log.
 import { spawn } from 'node:child_process';
 
-export function run(cmd, args, { cwd, log, env, input } = {}) {
+export function run(cmd, args, { cwd, log, env, input, shell = false } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd, env: { ...process.env, ...env }, windowsHide: true });
+    const child = spawn(cmd, args, { cwd, env: { ...process.env, ...env }, windowsHide: true, shell });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => {

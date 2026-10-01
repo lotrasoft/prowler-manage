@@ -58,7 +58,7 @@ The installer:
 - creates the master key that encrypts certificate private keys (see below)
 - installs and starts the `prowler-manage` systemd service
 
-Run it again after `git pull` to upgrade. Data, instances and the master key are kept.
+Run it again after `git pull` to upgrade, or use the **Updates** button (see [Updating Prowler Manager](#updating-prowler-manager)). Data, instances and the master key are kept.
 
 The service listens on `127.0.0.1:4500` only and has no login of its own. Open it from your workstation through an SSH tunnel:
 
@@ -101,10 +101,38 @@ The manager reads the `cloudflared` systemd unit:
 sudo systemctl disable --now prowler-manage
 # Stop instances first if you want them gone: for each folder in /var/lib/prowler-manage/instances,
 #   sudo docker compose -p prowler-<slug> --project-directory <folder> down -v
-sudo rm -rf /opt/prowler-manage /etc/systemd/system/prowler-manage.service /etc/sudoers.d/prowler-manage
+sudo systemctl disable --now prowler-manage-update.path
+sudo rm -rf /opt/prowler-manage /etc/systemd/system/prowler-manage.service /etc/systemd/system/prowler-manage-update.{service,path} /etc/sudoers.d/prowler-manage
 sudo rm -rf /var/lib/prowler-manage /etc/prowler-manage      # deletes all data and the master key
 sudo userdel prowler-manage
 ```
+
+## Updating Prowler Manager
+
+The **Updates** button in the header shows where this copy was installed from: the GitHub repository and branch, as a link. It also shows the installed and latest versions and the commits in between. **Update now** installs them and restarts the manager. Prowler instances keep running through the restart, and the page reloads itself on the new version. A dot on the button means an update is available; the manager checks every 6 hours. Updating is refused while an install, renewal or other job is running.
+
+**Git clone (development, Windows).**
+- The source is the clone's `origin` remote.
+- Updating runs `git pull --ff-only`, then `pnpm install`, then restarts the process. The new process logs to `data/manager.log`; under `pnpm dev` the watcher restarts it instead.
+- Updates are refused while the clone has uncommitted changes or commits that aren't on GitHub.
+- Your existing git login is used, so private repositories work.
+
+**Linux service.** The source is recorded at install time: the clone's GitHub `origin` and branch, or `--repo OWNER/NAME --branch BRANCH`. It's kept in `/etc/prowler-manage/install.conf`. Re-running the installer keeps it unless you pass `--repo`. How an update runs:
+1. The service can't modify `/opt`. **Update now** only drops a request file.
+2. The root-owned `prowler-manage-update.path` unit sees the file and runs `deploy/update.sh`.
+3. That script asks GitHub for the head of the recorded branch, downloads it and runs its installer.
+4. The installer stages the new version beside the old one and swaps it in. If the new version doesn't start, it rolls back to the previous one, and the dialog reports the failure.
+5. The updater always installs the **head of the recorded branch**, whatever the request file says.
+
+For a **private repository**, the service needs a GitHub token. Create a fine-grained token with read-only **Contents** access to this repository, then:
+
+```bash
+sudo ./deploy/install.sh --github-token-file ./token.txt     # stored as /etc/prowler-manage/github-token (0640)
+```
+
+An update never downgrades. If the installed version is newer than GitHub, the dialog says so and offers nothing. If the installed version isn't on GitHub at all (installed from local changes), the dialog warns that updating replaces it with the GitHub version.
+
+Status and logs: `journalctl -u prowler-manage-update` and `/var/lib/prowler-manage/update/status.json`. GitHub Enterprise: `--github-api https://ghe.example.com/api/v3`.
 
 ## Running on Windows
 

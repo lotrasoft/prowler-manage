@@ -636,6 +636,124 @@ $('#form-settings').addEventListener('submit', async (ev) => {
   }
 });
 
+// ---------- Self-update ----------
+
+async function loadUpdateSource() {
+  try {
+    const src = await api('GET', '/api/update/source');
+    const a = $('#upd-url');
+    if (src.url) {
+      a.href = src.url;
+      a.textContent = src.url;
+    } else {
+      a.removeAttribute('href');
+      a.textContent = src.mode === 'none' ? 'unknown (not a git clone or installer-based install)' : 'unknown';
+    }
+    $('#upd-branch').textContent = src.branch ? `branch ${src.branch}` : '';
+  } catch {}
+}
+
+async function checkUpdates({ quiet = false } = {}) {
+  const status = $('#upd-status');
+  const apply = $('#upd-apply');
+  if (!quiet) {
+    status.textContent = 'Checking GitHub…';
+    status.className = 'small muted';
+    apply.disabled = true;
+  }
+  try {
+    const c = await api('GET', '/api/update/check');
+    $('#update-dot').classList.toggle('hidden', !c.updateAvailable);
+    if (quiet) return c;
+    if (c.url) {
+      $('#upd-url').href = c.url;
+      $('#upd-url').textContent = c.url;
+    }
+    $('#upd-current').textContent = c.current || '—';
+    $('#upd-latest').textContent = c.latest || '—';
+    $('#upd-commits').replaceChildren(
+      ...(c.commits || []).map((x) =>
+        h('li', {}, h('code', {}, x.short), h('span', {}, x.message), h('span', { class: 'when' }, `${x.author || ''} · ${x.date ? new Date(x.date).toLocaleDateString() : ''}`)),
+      ),
+    );
+    if (!c.updateAvailable) {
+      status.textContent = c.reason || 'You are on the latest version.';
+      status.className = c.reason ? 'small error-inline' : 'small connected';
+    } else {
+      const count = c.commits.length ? `${c.commits.length} new commit${c.commits.length === 1 ? '' : 's'}. ` : '';
+      status.textContent = c.canUpdate
+        ? `${c.warning ? `${c.warning}. ` : ''}${count}Updating restarts the manager; Prowler instances keep running.`
+        : c.reason;
+      status.className = c.canUpdate ? 'small' : 'small error-inline';
+    }
+    apply.disabled = !c.canUpdate;
+    const last = c.lastResult;
+    $('#upd-last').textContent = last ? `Last update: ${last.state} ${last.finishedAt ? new Date(last.finishedAt).toLocaleString() : ''} ${last.message || ''}` : '';
+    return c;
+  } catch (e) {
+    if (!quiet) {
+      status.textContent = e.message;
+      status.className = 'small error-inline';
+    }
+    return null;
+  }
+}
+
+async function openUpdates() {
+  $('#upd-commits').replaceChildren();
+  $('#upd-last').textContent = '';
+  $('#upd-current').textContent = '…';
+  $('#upd-latest').textContent = '…';
+  $('#dlg-update').showModal();
+  await loadUpdateSource();
+  await checkUpdates();
+}
+
+/** After an update starts, wait for the manager to come back on a new version, then reload. */
+async function waitForNewVersion(oldSha) {
+  const status = $('#upd-status');
+  status.className = 'small';
+  const started = Date.now();
+  while (Date.now() - started < 10 * 60000) {
+    await new Promise((r) => setTimeout(r, 3000));
+    try {
+      const v = await api('GET', '/api/version');
+      if (v.sha && v.sha !== oldSha) {
+        status.textContent = `Updated to ${v.sha.slice(0, 7)}. Reloading…`;
+        setTimeout(() => location.reload(), 1000);
+        return;
+      }
+      status.textContent = 'Updating… (the manager is still on the old version)';
+    } catch {
+      status.textContent = 'Updating… the manager is restarting';
+    }
+  }
+  status.textContent = 'The manager has not come back on a new version yet. Check again in a minute, or look at the service log.';
+  status.className = 'small error-inline';
+}
+
+$('#upd-check').addEventListener('click', () => checkUpdates());
+$('#upd-apply').addEventListener('click', async () => {
+  if (!confirm('Update Prowler Manager now? The manager restarts; Prowler instances keep running.')) return;
+  const btn = $('#upd-apply');
+  btn.disabled = true;
+  try {
+    const before = await api('GET', '/api/version');
+    const r = await api('POST', '/api/update');
+    $('#upd-status').textContent = `Updating ${r.from} → ${r.to}…`;
+    waitForNewVersion(before.sha);
+  } catch (e) {
+    $('#upd-status').textContent = e.message;
+    $('#upd-status').className = 'small error-inline';
+    btn.disabled = false;
+  }
+});
+$('#btn-updates').addEventListener('click', openUpdates);
+
+// Quiet background check: show a dot on the Updates button when a new version exists.
+checkUpdates({ quiet: true });
+setInterval(() => checkUpdates({ quiet: true }), 6 * 3600000);
+
 $('#btn-add').addEventListener('click', openCreate);
 $('#btn-settings').addEventListener('click', openSettings);
 

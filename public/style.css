@@ -133,3 +133,8 @@ input:disabled { opacity: .6; }
 .error-inline { color: var(--danger); }
 .seg.vertical { flex-direction: column; gap: 6px; }
 .notice .links button { font-size: 12.5px; }
+.dot { display: inline-block; width: 8px; height: 8px; margin-left: 6px; border-radius: 50%; background: var(--primary); vertical-align: 1px; }
+.commits { max-height: 40vh; overflow: auto; margin: 0; padding-left: 0; list-style: none; }
+.commits li { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.commits code { color: var(--muted); flex: none; }
+.commits .when { margin-left: auto; color: var(--muted); white-space: nowrap; }
