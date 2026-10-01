@@ -1,0 +1,21 @@
+{
+  "name": "prowler-manage",
+  "version": "1.0.0",
+  "description": "Manage multiple Prowler App instances, one per Microsoft 365 tenant, published through Cloudflare Tunnel",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "build": "node -e \"for (const d of ['src','public']) for (const f of require('fs').readdirSync(d)) if (f.endsWith('.js')) require('child_process').execFileSync(process.execPath,['--check',d+'/'+f],{stdio:'inherit'}); console.log('Syntax OK - no build step needed, run: pnpm start')\"",
+    "start": "node src/server.js",
+    "dev": "node --watch --inspect src/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "node-forge": "^1.4.0",
+    "yaml": "^2.8.0"
+  },
+  "packageManager": "pnpm@12.3.4"
+}

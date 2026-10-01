@@ -1,0 +1,48 @@
+# systemd unit for Prowler Manager. Installed by deploy/install.sh, which fills in the node path
+# and the master-key line below, and may adjust the lines marked "install.sh".
+[Unit]
+Description=Prowler Manager (multi-tenant Prowler App instances)
+Documentation=file:///opt/prowler-manage/README.md
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=simple
+User=prowler-manage
+Group=prowler-manage
+SupplementaryGroups=docker
+WorkingDirectory=/opt/prowler-manage
+ExecStart=@NODE@ /opt/prowler-manage/src/server.js
+Restart=on-failure
+RestartSec=5
+
+# Listen on loopback only. Reach the UI through an SSH tunnel:
+#   ssh -L 4500:localhost:4500 <server>   then open http://localhost:4500
+Environment=HOST=127.0.0.1
+Environment=PORT=4500
+Environment=NODE_ENV=production
+Environment=PROWLER_MANAGE_DATA=/var/lib/prowler-manage/data
+Environment=PROWLER_MANAGE_INSTANCES=/var/lib/prowler-manage/instances
+Environment=HOME=/var/lib/prowler-manage
+Environment=DOCKER_CONFIG=/var/lib/prowler-manage/.docker
+
+# Master key that encrypts certificate private keys at rest (exposed as $CREDENTIALS_DIRECTORY/master-key).
+@KEY_CREDENTIAL@
+
+# Hardening. The service still controls Docker (the docker group is root-equivalent), so treat the
+# host and this account as privileged.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/prowler-manage
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# install.sh removes this line when --cloudflared-local is used (sudo needs new privileges).
+NoNewPrivileges=true
+# install.sh adds "ReadWritePaths=/etc/cloudflared" here when --cloudflared-local is used.
+
+[Install]
+WantedBy=multi-user.target

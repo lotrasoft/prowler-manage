@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prowler Manager</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22%3E%3Cpath fill=%22%232f5bea%22 d=%22M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Z%22/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Zm0 2.2 6 2.2V11c0 4-2.6 7.8-6 8.9-3.4-1.1-6-4.9-6-8.9V6.4l6-2.2Z"/></svg>
+      <span>Prowler Manager</span>
+    </div>
+    <div class="actions">
+      <button class="btn ghost" id="btn-settings">Settings</button>
+      <button class="btn primary" id="btn-add">+ New instance</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="banner" class="banner hidden"></div>
+    <section class="card">
+      <div class="card-head">
+        <h1>Instances</h1>
+        <span class="muted" id="summary"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Microsoft 365 tenant</th>
+              <th>URL</th>
+              <th>Version</th>
+              <th>Credential</th>
+              <th>Status</th>
+              <th class="right">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <div id="empty" class="empty hidden">
+          <p>No Prowler instances yet.</p>
+          <button class="btn primary" onclick="openCreate()">Create the first one</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Create / edit -->
+  <dialog id="dlg-instance">
+    <form id="form-instance" method="dialog">
+      <h2 id="dlg-instance-title">New instance</h2>
+      <p class="muted small" id="dlg-instance-sub">Installs the latest Prowler App release, connects it to the tenant and publishes it through Cloudflare Tunnel.</p>
+      <div class="grid">
+        <label>Display name<input name="name" required placeholder="Contoso"></label>
+        <div class="span2 create-only seg vertical" role="radiogroup" aria-label="Tenant connection">
+          <label class="check"><input type="radio" name="tenantMode" value="msp" checked> Through my MSP app (recommended for client tenants)</label>
+          <label class="check"><input type="radio" name="tenantMode" value="connect"> Create a dedicated app in the customer's tenant</label>
+          <label class="check"><input type="radio" name="tenantMode" value="manual"> Use an existing app registration</label>
+        </div>
+        <div class="span2 create-only tenant-msp connect-box">
+          <div id="msp-missing" class="hidden">
+            <p class="small" style="margin:0 0 10px">Set up your MSP app once first. It's a multi-tenant app in your own tenant that each customer approves.</p>
+            <button type="button" class="btn primary" onclick="openSettings()">Open Settings</button>
+          </div>
+          <div id="msp-ready">
+            <label>Customer domain<input name="mspCustomer" placeholder="contoso.com or contoso.onmicrosoft.com" autocomplete="off"></label>
+            <p class="small" style="margin:10px 0">The customer approves <b id="msp-app-name">your Prowler app</b> once through Microsoft's admin-consent page. That creates the enterprise app in their tenant.</p>
+            <ul class="small" style="margin:0 0 10px;padding-left:18px">
+              <li><b>Approve now:</b> sign in as the customer's Global Administrator, or with your partner account through GDAP (Global Administrator, or Privileged Role Administrator + Cloud Application Administrator).</li>
+              <li><b>Or just click Create:</b> the instance installs and shows a consent link to send to the customer, then continues on its own once they approve.</li>
+            </ul>
+            <div class="connect-row">
+              <button type="button" class="btn primary" id="btn-msp-approve">Approve now</button>
+              <button type="button" class="btn" id="btn-msp-copy">Copy consent link</button>
+              <span id="msp-status" class="small muted"></span>
+            </div>
+            <ul id="msp-steps" class="steps small"></ul>
+          </div>
+        </div>
+        <div class="span2 create-only tenant-connect connect-box">
+          <p class="small" style="margin:0 0 10px">Sign in as a <b>Global Administrator</b> of the customer's tenant. The manager creates a "Prowler" app registration there with an auto-renewing certificate, then Microsoft asks you to approve Prowler's read-only permissions.</p>
+          <div class="connect-row">
+            <button type="button" class="btn primary" id="btn-connect">Connect Microsoft 365 tenant</button>
+            <span id="connect-status" class="small muted"></span>
+          </div>
+          <ul id="connect-steps" class="steps small"></ul>
+        </div>
+        <label class="tenant-manual">Tenant primary domain<input name="tenantDomain" required placeholder="contoso.onmicrosoft.com"></label>
+        <label class="tenant-manual">Tenant ID<input name="tenantId" required placeholder="00000000-0000-0000-0000-000000000000"></label>
+        <label class="tenant-manual">App (client) ID<input name="clientId" required placeholder="00000000-0000-0000-0000-000000000000"></label>
+        <label class="span2 tenant-manual">Authentication
+          <select name="authMethod">
+            <option value="certificate">Certificate, renewed automatically (recommended)</option>
+            <option value="secret">Client secret</option>
+          </select>
+        </label>
+        <label class="span2 tenant-manual auth-secret">Client secret<input name="clientSecret" type="password" autocomplete="new-password" placeholder=""></label>
+        <p class="span2 hint small tenant-manual auth-cert" style="margin:0">The manager generates a certificate. You upload it to the app registration once; after that it renews itself before it expires. For self-renewal the app also needs the Graph application permission <b>Application.ReadWrite.OwnedBy</b> and must be an owner of its own registration. The exact steps appear while the instance is created.</p>
+        <label class="span2">Public hostname<input name="hostname" placeholder=""></label>
+        <label class="create-only">Prowler admin email<input name="adminEmail" type="email" required placeholder="admin@yourcompany.com"></label>
+        <label class="create-only">Prowler admin password<input name="adminPassword" type="password" autocomplete="new-password" placeholder="Leave blank to generate"></label>
+        <label class="edit-only span2 check"><input type="checkbox" name="upgrade"> Upgrade to the latest Prowler release</label>
+      </div>
+      <p class="hint small tenant-manual">The app registration needs the permissions listed in the README (Microsoft Graph, Exchange Online, Teams, and the Global Reader role) with admin consent.</p>
+      <div class="error hidden" id="form-error"></div>
+      <div class="dlg-actions">
+        <button type="button" class="btn ghost" onclick="closeDialog('dlg-instance')">Cancel</button>
+        <button type="submit" class="btn primary" id="btn-instance-submit">Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Job progress -->
+  <dialog id="dlg-job" class="wide">
+    <div class="job-head">
+      <h2 id="job-title">Working…</h2>
+      <span class="pill" id="job-status">running</span>
+    </div>
+    <div id="job-notice" class="notice hidden">
+      <pre id="job-notice-text"></pre>
+      <div id="job-links" class="links"></div>
+    </div>
+    <pre id="job-log" class="log"></pre>
+    <div class="dlg-actions">
+      <button class="btn ghost" onclick="closeDialog('dlg-job')">Close (keeps running)</button>
+    </div>
+  </dialog>
+
+  <!-- Container logs -->
+  <dialog id="dlg-logs" class="wide">
+    <div class="job-head">
+      <h2 id="logs-title">Logs</h2>
+      <select id="logs-service">
+        <option value="">all services</option>
+        <option>ui</option><option>api</option><option>worker</option><option>worker-beat</option>
+        <option>postgres</option><option>valkey</option><option>neo4j</option><option>mcp-server</option>
+      </select>
+    </div>
+    <pre id="logs-body" class="log"></pre>
+    <div class="dlg-actions">
+      <button class="btn ghost" id="logs-refresh">Refresh</button>
+      <button class="btn ghost" onclick="closeDialog('dlg-logs')">Close</button>
+    </div>
+  </dialog>
+
+  <!-- Settings -->
+  <dialog id="dlg-settings">
+    <form id="form-settings" method="dialog">
+      <h2>Settings</h2>
+      <p class="muted small" id="system-info" style="margin:0"></p>
+      <div class="grid">
+        <label class="span2">Instances folder<input name="instancesDir"></label>
+        <label>Base domain for hostnames<input name="baseDomain" placeholder="example.com"></label>
+        <label>Neo4j memory per instance<input name="neo4jMemory" placeholder="512M"></label>
+        <label>First UI port<input name="uiPortBase" type="number"></label>
+        <label>First API port<input name="apiPortBase" type="number"></label>
+        <label>Certificate lifetime (months)<input name="certLifetimeMonths" type="number" min="1" max="24"></label>
+        <label>Renew before expiry (days)<input name="certRenewBeforeDays" type="number" min="1" max="90"></label>
+      </div>
+      <h3>MSP app</h3>
+      <div id="msp-settings" class="connect-box small">
+        <div id="msp-settings-missing">
+          <p style="margin:0 0 10px">Creates one multi-tenant "Prowler" app in <b>your</b> tenant, with the read-only permissions Prowler needs and an auto-renewing certificate. Each customer then approves it through an admin-consent link, or you approve it through GDAP. Sign in as a Global Administrator of your MSP tenant.</p>
+          <div class="connect-row">
+            <button type="button" class="btn primary" id="btn-msp-create">Create MSP app</button>
+            <span id="msp-create-status" class="muted"></span>
+          </div>
+          <ul id="msp-create-steps" class="steps"></ul>
+        </div>
+        <div id="msp-settings-ready" class="hidden">
+          <div class="kv"><span>App</span><span id="msp-s-name"></span></div>
+          <div class="kv"><span>Application (client) ID</span><code id="msp-s-client"></code></div>
+          <div class="kv"><span>Your tenant</span><span id="msp-s-tenant"></span></div>
+          <div class="kv"><span>Certificate</span><span id="msp-s-cert"></span></div>
+          <div class="kv"><span>Auto-renewal</span><span id="msp-s-renew"></span></div>
+          <div class="connect-row" style="margin-top:10px">
+            <button type="button" class="btn" id="btn-msp-renew">Renew certificate now</button>
+          </div>
+        </div>
+      </div>
+
+      <h3>Cloudflare Tunnel</h3>
+      <p class="muted small" id="detect-info">Detecting cloudflared…</p>
+      <div class="grid">
+        <label class="span2">Mode
+          <select name="cf.mode">
+            <option value="api">Remotely-managed tunnel (Cloudflare API)</option>
+            <option value="local">Locally-managed tunnel (config.yml)</option>
+            <option value="none">Don't publish (local access only)</option>
+          </select>
+        </label>
+        <label class="span2 mode-api">API token<input name="cf.apiToken" type="password" autocomplete="off" placeholder="Leave blank to keep current"></label>
+        <label class="mode-api">Account ID<input name="cf.accountId" placeholder="auto-detected"></label>
+        <label class="mode-api">Tunnel ID<input name="cf.tunnelId" placeholder="auto-detected"></label>
+        <label class="span2 mode-api">Zone ID<input name="cf.zoneId" placeholder="optional; looked up from hostname"></label>
+        <label class="span2 mode-local">config.yml path<input name="cf.configPath" placeholder="auto-detected"></label>
+        <label class="span2 mode-local">Tunnel name or ID<input name="cf.tunnelName" placeholder="from config.yml"></label>
+      </div>
+      <p class="hint small mode-api">Token permissions: Account › Cloudflare Tunnel › Edit, Zone › DNS › Edit, Zone › Zone › Read.</p>
+      <div class="error hidden" id="settings-error"></div>
+      <div class="dlg-actions">
+        <button type="button" class="btn ghost" onclick="closeDialog('dlg-settings')">Cancel</button>
+        <button type="submit" class="btn primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Confirm delete -->
+  <dialog id="dlg-delete">
+    <form method="dialog" id="form-delete">
+      <h2>Delete instance?</h2>
+      <p>This stops <b id="del-name"></b>, deletes its database, scan results and files, and removes <b id="del-host"></b> from the Cloudflare tunnel. It cannot be undone.</p>
+      <label class="check" id="del-app-row" style="margin:10px 0"><input type="checkbox" id="del-app"> Also delete the app registration from the tenant</label>
+      <label>Type the instance name to confirm<input id="del-confirm" autocomplete="off"></label>
+      <div class="dlg-actions">
+        <button type="button" class="btn ghost" onclick="closeDialog('dlg-delete')">Cancel</button>
+        <button type="submit" class="btn danger" id="btn-del" disabled>Delete</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Approve MSP app for an existing instance -->
+  <dialog id="dlg-approve">
+    <h2 id="approve-title">Approve Prowler</h2>
+    <p class="small">Sign in as the customer's Global Administrator, or with your partner account through GDAP. Microsoft shows the permissions to approve; the manager then assigns the Global Reader role.</p>
+    <p id="approve-status" class="small muted"></p>
+    <ul id="approve-steps" class="steps small"></ul>
+    <div class="dlg-actions">
+      <button class="btn primary" onclick="closeDialog('dlg-approve')">Close</button>
+    </div>
+  </dialog>
+
+  <!-- Credentials -->
+  <dialog id="dlg-creds">
+    <h2>Prowler sign-in</h2>
+    <div class="kv"><span>Email</span><code id="cred-email"></code></div>
+    <div class="kv"><span>Password</span><code id="cred-pass"></code></div>
+    <div class="dlg-actions">
+      <button class="btn ghost" id="cred-copy">Copy password</button>
+      <button class="btn primary" onclick="closeDialog('dlg-creds')">Close</button>
+    </div>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
