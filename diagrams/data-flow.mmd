@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant Operator as Operator
+    participant Manager as manager service
+    participant Store as local JSON registry
+    participant Docker as Docker Compose
+    participant Tenant as Microsoft 365 tenant
+    participant Cloudflare as Cloudflare tunnel
+
+    Operator->>Manager: Create tenant instance
+    Manager->>Store: persist settings + instance metadata
+    Manager->>Docker: download compose files and start stack
+    Manager->>Tenant: register app / consent / Graph permission checks
+    Tenant-->>Manager: tenant credentials accepted
+    Manager->>Docker: initialize Prowler provider and schedule
+    Manager->>Cloudflare: publish hostname if configured
+    Cloudflare-->>Operator: public URL available

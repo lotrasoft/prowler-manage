@@ -1,0 +1,13 @@
+flowchart TD
+    A[public/index.html + app.js] --> B[server.js]
+    B --> C[store.js]
+    B --> D[onboarding.js]
+    B --> E[msp.js]
+    B --> F[renewal.js]
+    B --> G[prowler.js]
+    G --> H[Docker Compose]
+    F --> I[certs.js]
+    I --> J[secrets.js]
+    E --> K[Microsoft Graph]
+    G --> L[Cloudflare tunnel]
+    H --> M[Prowler services]

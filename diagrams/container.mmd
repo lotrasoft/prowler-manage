@@ -1,0 +1,18 @@
+flowchart TB
+    subgraph Host[Host machine]
+        UI[Browser client]
+        API[Express API\nNode.js]
+        Store[JSON state\nstore.js]
+        Orchestrator[Deployment + lifecycle\nprowler.js + renewal.js]
+        Secrets[Encrypted secrets\nsecrets.js]
+        Docker[Docker Engine]
+        Tunnel[cloudflared]
+    end
+
+    UI --> API
+    API --> Store
+    API --> Orchestrator
+    Orchestrator --> Secrets
+    Orchestrator --> Docker
+    Orchestrator --> Tunnel
+    Docker --> Instances[Multiple Prowler stacks]

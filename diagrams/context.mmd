@@ -1,0 +1,10 @@
+flowchart LR
+    Admin[Administrator] --> UI[Manager UI]
+    UI --> API[Express API]
+    API --> Core[Manager logic]
+    Core --> Docker[Docker Compose stacks]
+    Core --> Entra[Microsoft Entra / Microsoft Graph]
+    Core --> CF[Cloudflare tunnel]
+    Docker --> Prowler[Prowler App tenant instances]
+    Entra --> M365[Microsoft 365 tenant]
+    CF --> Public[Public hostname]

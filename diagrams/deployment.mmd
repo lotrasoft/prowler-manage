@@ -1,0 +1,16 @@
+flowchart LR
+    subgraph LinuxHost[Linux host]
+        Service[prowler-manage systemd service]
+        Update[prowler-manage-update.path + service]
+        Data[/var/lib/prowler-manage]
+        Install[/opt/prowler-manage]
+        Docker[Docker daemon]
+    end
+
+    Service --> Install
+    Service --> Data
+    Service --> Docker
+    Update --> Install
+    Docker --> Instance1[prowler-tenant1]
+    Docker --> Instance2[prowler-tenant2]
+    Docker --> InstanceN[prowler-tenantN]
