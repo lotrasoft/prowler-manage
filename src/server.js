@@ -598,9 +598,9 @@ for (const inst of store.listInstances()) {
 
 renewal.startScheduler();
 
-function shutdown() {
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 3000).unref();
+function shutdown(code = 0) {
+  server.close(() => process.exit(code));
+  setTimeout(() => process.exit(code), 3000).unref();
 }
 
 // After a self-update the new process starts while the old one is still releasing the port.
@@ -616,6 +616,7 @@ function onListenError(e) {
 
 const server = app.listen(PORT, HOST, async () => {
   console.log(`Prowler Manager running at http://${HOST}:${PORT}`);
+  await updater.init().catch(() => {});
   try {
     console.log(`Private keys are encrypted with: ${checkMasterKey()}`);
   } catch (e) {
@@ -631,6 +632,6 @@ server.on('error', onListenError);
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => {
     console.log(`${sig} received, shutting down`);
-    shutdown();
+    shutdown(0);
   });
 }

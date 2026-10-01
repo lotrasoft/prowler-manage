@@ -118,7 +118,10 @@ async function refresh() {
     const data = await api('GET', '/api/instances');
     instances = data.instances;
     const isLocal = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
-    if (settings?.access?.viaCloudflare && !settings.access.cloudflareAccess) {
+    const version = await api('GET', '/api/version').catch(() => null);
+    if (version?.restartPending) {
+      setBanner(h('b', {}, 'Restart needed: '), `the code was updated to ${version.diskSha.slice(0, 7)}, but the manager is still running ${version.sha.slice(0, 7)}. Restart the service (or the process) so the page and the server match.`);
+    } else if (settings?.access?.viaCloudflare && !settings.access.cloudflareAccess) {
       setBanner(h('b', {}, 'This manager is reachable from the internet without Cloudflare Access. '),
         'It has no login of its own: anyone with this address can read Prowler passwords, approve tenants and delete instances. Put a Cloudflare Access application in front of this hostname now.');
     } else if (!isLocal && !(settings?.managerUrls || []).includes(location.origin)) {

@@ -163,11 +163,36 @@ export async function check() {
 }
 
 /** The running version (for the UI to notice a restart onto a new version). */
-export async function currentVersion() {
+/** Version of the code on disk right now. */
+async function diskVersion() {
   const m = mode();
-  if (m === 'git') return { mode: m, sha: await git('rev-parse', 'HEAD').catch(() => null) };
-  if (m === 'service') return { mode: m, sha: readJson(VERSION_FILE)?.sha || null };
-  return { mode: m, sha: null };
+  if (m === 'git') return git('rev-parse', 'HEAD').catch(() => null);
+  if (m === 'service') return readJson(VERSION_FILE)?.sha || null;
+  return null;
+}
+
+// The version this process started with. The code on disk changes as soon as an update is pulled,
+// but the process keeps running the old code until it restarts.
+let runningSha = null;
+export async function init() {
+  runningSha = await diskVersion();
+}
+
+/** Running version vs. code on disk (they differ while a restart is pending). */
+export async function currentVersion() {
+  const disk = await diskVersion();
+  return { mode: mode(), sha: runningSha, diskSha: disk, restartPending: !!(disk && runningSha && disk !== runningSha) };
+}
+
+/**
+ * Running under a service manager that restarts us when we exit: systemd (INVOCATION_ID), pm2
+ * (pm_id), or anything else that sets PROWLER_MANAGE_SUPERVISED=1 (e.g. an NSSM Windows service).
+ */
+export function supervisor() {
+  if (process.env.PROWLER_MANAGE_SUPERVISED === '1') return 'service manager';
+  if (process.env.INVOCATION_ID) return 'systemd';
+  if (process.env.pm_id !== undefined) return 'pm2';
+  return null;
 }
 
 /** Apply the update. Resolves once the update is underway; the process restarts afterwards. */
@@ -198,7 +223,16 @@ export async function update(log, { shutdown }) {
     log('Running under node --watch: it restarts on the changed files by itself');
     return { restarting: true };
   }
-  // Start a fresh copy of this process (it waits for the port), then exit.
+  const sup = supervisor();
+  if (sup) {
+    // Let the service manager start the new version: exit with a failure code, which systemd
+    // (Restart=on-failure/always), pm2 and NSSM all treat as "restart". A detached copy would be
+    // killed with the service (systemd) or fight the restarted one over the port.
+    log(`Restarting through ${sup}`);
+    setTimeout(() => shutdown(75), 1500);
+    return { restarting: true };
+  }
+  // Plain terminal: start a fresh copy of this process (it waits for the port), then exit.
   const logFile = path.join(DATA_DIR, 'manager.log');
   const out = fs.openSync(logFile, 'a');
   const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
