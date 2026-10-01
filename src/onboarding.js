@@ -14,6 +14,11 @@
 // direct   Per customer, without the MSP app: a customer admin signs in, the manager creates a
 //          dedicated app registration in that tenant, then Microsoft's admin-consent page grants it.
 //
+// Return address: Microsoft sends the browser back to the address the manager is being used from
+// (http://localhost:PORT, or a public address such as a Cloudflare hostname listed in Settings →
+// Manager address). The Graph Command Line Tools client only accepts localhost, so from a public
+// address the flows that use it (msp-app, direct) sign in with a device code instead.
+//
 // Admin tokens live only in memory and are dropped as soon as a flow finishes.
 import crypto from 'node:crypto';
 import * as store from './store.js';
@@ -67,12 +72,44 @@ const sessions = new Map();
 const SESSION_TTL = 2 * 3600000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-export function redirectUri() {
-  return `http://localhost:${process.env.PORT || 4500}`;
+export function localRedirect(port = process.env.PORT || 4500) {
+  return `http://localhost:${port}`;
+}
+
+export const isLocalUrl = (url) => new URL(url).hostname === 'localhost';
+
+/**
+ * Where Microsoft should send the browser back to: the manager's address as the browser sees it.
+ * Loopback addresses are always fine; anything else must be listed in Settings → Manager address,
+ * so a sign-in can never be redirected to an address the operator didn't approve.
+ */
+export function resolveReturnUrl(origin) {
+  if (!origin) return localRedirect();
+  let u;
+  try {
+    u = new URL(origin);
+  } catch {
+    throw new Error(`Invalid address ${origin}`);
+  }
+  if (['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)) {
+    // Microsoft treats localhost specially (any port); 127.0.0.1 would need its own registration.
+    return localRedirect(u.port || (u.protocol === 'https:' ? 443 : 80));
+  }
+  const allowed = (store.getSettings().managerUrls || []).map((x) => {
+    try {
+      return new URL(x).origin;
+    } catch {
+      return null;
+    }
+  });
+  if (allowed.includes(u.origin)) return u.origin;
+  const err = new Error(`This manager is being used from ${u.origin}, which isn't listed under Settings → Manager address. Add it there first (it must be the address Microsoft sends you back to).`);
+  err.code = 'UNLISTED_ORIGIN';
+  throw err;
 }
 
 function publicSession(s) {
-  const { verifier, token, cert, ...pub } = s;
+  const { verifier, token, cert, deviceCode, ...pub } = s;
   return pub;
 }
 
@@ -103,12 +140,13 @@ export function discardSession(id) {
 }
 
 /** Begin a flow; returns the Microsoft URL to open in a popup. */
-export async function startSession({ kind = 'direct', name, customer, instanceId }) {
+export async function startSession({ kind = 'direct', name, customer, instanceId, origin }) {
   for (const [id, s] of sessions) if (Date.now() - s.createdAt > SESSION_TTL) sessions.delete(id);
   if (!SCOPES[kind]) throw new Error(`Unknown connection type ${kind}`);
   const settings = store.getSettings();
   const s = { id: crypto.randomBytes(16).toString('hex'), kind, name: name || 'Prowler', status: 'signing-in', steps: [], createdAt: Date.now() };
   s.verifier = crypto.randomBytes(32).toString('base64url');
+  s.redirect = resolveReturnUrl(origin);
   s.signInClientId = settings.setupClientId;
   s.authority = 'organizations';
   const extra = { prompt: 'select_account' };
@@ -128,12 +166,23 @@ export async function startSession({ kind = 'direct', name, customer, instanceId
     s.authority = s.tenantId;
     s.clientId = m.clientId;
     delete extra.prompt; // the admin just signed in on the consent page; reuse that session
+    // Microsoft only returns to registered addresses: make sure this one is on the MSP app.
+    if (await msp.ensureRedirectUri(s.redirect)) {
+      // A newly added address takes a little while to reach the consent endpoint.
+      await sleep(20000);
+    }
   }
   sessions.set(s.id, s);
+
+  // Public address + Graph Command Line Tools (localhost-only): sign in with a device code.
+  if (kind !== 'msp' && !isLocalUrl(s.redirect) && s.signInClientId === DEFAULT_SETUP_CLIENT) {
+    await startDeviceCode(s);
+    return { id: s.id, authUrl: `/onboarding.html?id=${s.id}` };
+  }
   const params = new URLSearchParams({
     client_id: s.signInClientId,
     response_type: 'code',
-    redirect_uri: redirectUri(),
+    redirect_uri: s.redirect,
     response_mode: 'query',
     scope: SCOPES[kind],
     state: `${s.id}.signin`,
@@ -145,10 +194,56 @@ export async function startSession({ kind = 'direct', name, customer, instanceId
   if (kind === 'msp') {
     // Step 1 is the admin-consent page; step 2 (this sign-in) follows once it's approved.
     s.signInUrl = signInUrl;
-    const consent = new URLSearchParams({ client_id: s.clientId, redirect_uri: redirectUri(), state: `${s.id}.mspconsent` });
+    const consent = new URLSearchParams({ client_id: s.clientId, redirect_uri: s.redirect, state: `${s.id}.mspconsent` });
     return { id: s.id, authUrl: `${LOGIN}/${s.tenantId}/adminconsent?${consent}` };
   }
   return { id: s.id, authUrl: signInUrl };
+}
+
+const DEFAULT_SETUP_CLIENT = '14d82eec-204b-4c2f-b7e8-296a70dab67e';
+
+/** Device-code sign-in: the admin enters a short code at microsoft.com/devicelogin. */
+async function startDeviceCode(s) {
+  const res = await fetch(`${LOGIN}/organizations/oauth2/v2.0/devicecode`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: s.signInClientId, scope: SCOPES[s.kind] }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Device sign-in unavailable: ${(json.error_description || json.error || res.statusText).split(/\r?\n/)[0]}`);
+  s.deviceCode = json.device_code;
+  s.userCode = json.user_code;
+  s.verificationUri = json.verification_uri;
+  s.status = 'device-code';
+  step(s, 'Waiting for the sign-in code to be entered at Microsoft');
+  pollDeviceCode(s, Number(json.interval) || 5, Date.now() + (Number(json.expires_in) || 900) * 1000).catch((e) => fail(s, e));
+}
+
+async function pollDeviceCode(s, interval, deadline) {
+  const next = { direct: directSetup, 'msp-app': createMspApp }[s.kind];
+  while (Date.now() < deadline) {
+    await sleep(interval * 1000);
+    if (s.status !== 'device-code') return; // abandoned or failed
+    const res = await fetch(`${LOGIN}/organizations/oauth2/v2.0/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ client_id: s.signInClientId, grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: s.deviceCode }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (res.ok) {
+      s.deviceCode = null;
+      s.status = 'working';
+      acceptTokens(s, json);
+      return next(s);
+    }
+    if (json.error === 'authorization_pending') continue;
+    if (json.error === 'slow_down') {
+      interval += 5;
+      continue;
+    }
+    throw new Error(`Sign-in failed: ${(json.error_description || json.error || res.statusText).split(/\r?\n/)[0]}`);
+  }
+  throw new Error('The sign-in code expired; start again');
 }
 
 function step(s, text) {
@@ -253,7 +348,7 @@ async function exchangeCode(s, code) {
     client_id: s.signInClientId,
     grant_type: 'authorization_code',
     code,
-    redirect_uri: redirectUri(),
+    redirect_uri: s.redirect,
     code_verifier: s.verifier,
     scope: SCOPES[s.kind],
   };
@@ -269,6 +364,10 @@ async function exchangeCode(s, code) {
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`Sign-in failed: ${(json.error_description || json.error || res.statusText).split(/\r?\n/)[0]}`);
+  acceptTokens(s, json);
+}
+
+function acceptTokens(s, json) {
   const idClaims = jwtClaims(json.id_token);
   s.token = json.access_token;
   s.signInTenantId = idClaims.tid;
@@ -353,7 +452,7 @@ async function createMspApp(s) {
     notes: 'Prowler Microsoft 365 security scanning (read-only), operated by prowler-manage. Customers approve it through admin consent.',
     requiredResourceAccess: access,
     keyCredentials: [{ type: 'AsymmetricX509Cert', usage: 'Verify', key: material.certDer, displayName: `prowler-manage ${material.thumbprint}` }],
-    web: { redirectUris: [redirectUri(), msp.NATIVE_REDIRECT] },
+    web: { redirectUris: [...new Set([localRedirect(), s.redirect, msp.NATIVE_REDIRECT])] },
   });
   step(s, `Created multi-tenant app "${displayName}" (${app.appId}) with certificate ${material.thumbprint.slice(0, 8)}…`);
   const sp = await graph(s, 'POST', '/servicePrincipals', { appId: app.appId });
@@ -371,6 +470,7 @@ async function createMspApp(s) {
       tenantId: s.signInTenantId,
       tenantDomain: s.tenantDomain,
       displayName,
+      redirectUris: [...new Set([localRedirect(), s.redirect, msp.NATIVE_REDIRECT])],
       createdBy: s.signedInAs,
       createdAt: new Date().toISOString(),
       cert: { appObjectId: app.id, current: { ...sealed, verified: true, verifiedAt: new Date().toISOString() } },
@@ -435,7 +535,7 @@ async function directSetup(s) {
     requiredResourceAccess: access,
     keyCredentials: [{ type: 'AsymmetricX509Cert', usage: 'Verify', key: material.certDer, displayName: `prowler-manage ${material.thumbprint}` }],
     // Only needed for the admin-consent redirect; removed again afterwards.
-    web: { redirectUris: [redirectUri()] },
+    web: { redirectUris: [s.redirect] },
   });
   s.clientId = app.appId;
   s.appObjectId = app.id;
@@ -446,7 +546,7 @@ async function directSetup(s) {
   step(s, 'Made the app an owner of its own registration (for certificate self-renewal)');
   s.globalReader = await assignGlobalReader(s, sp.id);
 
-  const params = new URLSearchParams({ client_id: app.appId, redirect_uri: redirectUri(), state: `${s.id}.consent` });
+  const params = new URLSearchParams({ client_id: app.appId, redirect_uri: s.redirect, state: `${s.id}.consent` });
   s.consentUrl = `${LOGIN}/${s.tenantId}/adminconsent?${params}`;
   // Give the new app a moment to replicate before sending the admin to its consent page.
   s.status = 'preparing-consent';

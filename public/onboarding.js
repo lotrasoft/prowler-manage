@@ -47,6 +47,24 @@ async function tick() {
     setTimeout(() => location.assign(s.consentUrl), 1500);
     return;
   }
+  if (s.status === 'device-code' && s.userCode) {
+    // From a public address, Microsoft can't return here for this sign-in; enter a code instead.
+    if (!document.querySelector('.device-code')) {
+      setStatus('Sign in with this code at Microsoft:', {});
+      $('#status').after(el('div', { className: 'device-code' }, s.userCode));
+      $('#actions').replaceChildren(
+        el('button', { className: 'btn', onclick: () => navigator.clipboard.writeText(s.userCode) }, 'Copy code'),
+        el('a', { className: 'btn primary', href: s.verificationUri, target: '_blank', rel: 'noopener' }, 'Open Microsoft sign-in'),
+      );
+    }
+    setTimeout(tick, 2000);
+    return;
+  }
+  const codeBox = document.querySelector('.device-code');
+  if (codeBox) {
+    codeBox.remove();
+    $('#actions').replaceChildren();
+  }
   if (s.status === 'done') {
     setStatus(`Connected ${s.orgName} (${s.tenantDomain}). You can return to Prowler Manager.`, { cls: 'connected' });
     closeButton();

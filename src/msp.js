@@ -29,6 +29,36 @@ export async function resolveTenant(domainOrId) {
   return tenantId;
 }
 
+/**
+ * Make sure `uri` is a registered return address of the MSP app (Microsoft only redirects to those).
+ * The app edits its own registration (it owns itself and has Application.ReadWrite.OwnedBy in the
+ * MSP tenant). Returns true if the address was added just now.
+ */
+export async function ensureRedirectUri(uri) {
+  const m = config();
+  if ((m.redirectUris || []).includes(uri)) return false;
+  const app = new EntraApp({ tenantId: m.tenantId, clientId: m.clientId });
+  let token;
+  try {
+    token = await app.token(await currentCert());
+  } catch (e) {
+    throw new Error(`Could not sign in as the MSP app to register ${uri}: ${e.message}`);
+  }
+  const current = (await app.graph(token, 'GET', `/applications/${m.appObjectId}?$select=web`)).web?.redirectUris || [];
+  let added = false;
+  if (!current.includes(uri)) {
+    try {
+      await app.graph(token, 'PATCH', `/applications/${m.appObjectId}`, { web: { redirectUris: [...current, uri] } });
+    } catch (e) {
+      throw new Error(`Could not add ${uri} to the MSP app's redirect URIs (${e.message}). Add it by hand: Entra admin center → App registrations → ${m.displayName} → Authentication → Web → Redirect URIs`);
+    }
+    added = true;
+  }
+  const s = store.getSettings();
+  store.saveSettings({ ...s, msp: { ...s.msp, redirectUris: [...new Set([...current, uri])] } });
+  return added;
+}
+
 /** The link a customer's Global Admin opens to approve the MSP app in their tenant. */
 export function consentLink(tenantId) {
   const params = new URLSearchParams({ client_id: config().clientId, redirect_uri: NATIVE_REDIRECT });

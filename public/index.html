@@ -154,6 +154,11 @@
       <h2>Settings</h2>
       <p class="muted small" id="system-info" style="margin:0"></p>
       <div class="grid">
+        <label class="span2">Manager address (public URLs you open this manager from, e.g. its Cloudflare hostname; one per line)
+          <textarea name="managerUrls" rows="2" placeholder="https://prowler-manager.example.com"></textarea>
+        </label>
+        <div class="span2" style="margin-top:-6px"><button type="button" class="btn sm hidden" id="btn-use-origin"></button>
+          <span class="muted small">Microsoft sign-ins return to this address. localhost always works.</span></div>
         <label class="span2">Instances folder<input name="instancesDir"></label>
         <label>Base domain for hostnames<input name="baseDomain" placeholder="example.com"></label>
         <label>Neo4j memory per instance<input name="neo4jMemory" placeholder="512M"></label>

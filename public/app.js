@@ -117,7 +117,14 @@ async function refresh() {
   try {
     const data = await api('GET', '/api/instances');
     instances = data.instances;
-    if (!data.dockerAvailable) {
+    const isLocal = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+    if (settings?.access?.viaCloudflare && !settings.access.cloudflareAccess) {
+      setBanner(h('b', {}, 'This manager is reachable from the internet without Cloudflare Access. '),
+        'It has no login of its own: anyone with this address can read Prowler passwords, approve tenants and delete instances. Put a Cloudflare Access application in front of this hostname now.');
+    } else if (!isLocal && !(settings?.managerUrls || []).includes(location.origin)) {
+      setBanner(`Microsoft sign-ins will fail from ${location.origin} until it is added under `,
+        h('a', { href: '#', onclick: (e) => { e.preventDefault(); openSettings(); } }, 'Settings → Manager address'), '.');
+    } else if (!data.dockerAvailable) {
       setBanner('Docker is not reachable. Start Docker Desktop to see instance status and run operations.');
     } else if (settings?.cloudflare.mode === 'api' && !settings.cloudflare.hasApiToken) {
       setBanner('Cloudflare API token is not set, so new instances can\'t be published. Open ',
@@ -133,6 +140,7 @@ async function refresh() {
 
 const STATUS_TEXT = {
   'signing-in': 'Waiting for Microsoft sign-in in the popup window…',
+  'device-code': 'Enter the code shown in the popup at microsoft.com/devicelogin…',
   working: 'Setting things up…',
   'preparing-consent': 'Preparing the permission request…',
   'awaiting-consent': 'Waiting for you to approve the permissions in the popup window…',
@@ -152,8 +160,9 @@ function popupSession(params, onUpdate) {
     try {
       const r = await api('POST', '/api/onboarding', params);
       if (stopped) return;
-      if (popup) popup.location = r.authUrl;
-      else window.open(r.authUrl, 'prowler-connect');
+      const url = new URL(r.authUrl, location.origin).href;
+      if (popup) popup.location = url;
+      else window.open(url, 'prowler-connect');
       onUpdate({ id: r.id, status: 'signing-in', steps: [] });
       timer = setInterval(async () => {
         try {
@@ -168,6 +177,16 @@ function popupSession(params, onUpdate) {
     } catch (e) {
       popup?.close();
       onUpdate({ status: 'error', error: e.message, steps: [] });
+      // Using the manager from an address that isn't approved yet: offer to approve it.
+      if (/Settings → Manager address/.test(e.message) && confirm(`Add ${location.origin} as this manager's address, so Microsoft can send you back here?`)) {
+        try {
+          await api('PUT', '/api/settings', { managerUrls: [...(settings?.managerUrls || []), location.origin] });
+          await loadSettings();
+          onUpdate({ status: 'error', error: `${location.origin} added. Click the button again to continue.`, steps: [] });
+        } catch (e2) {
+          onUpdate({ status: 'error', error: e2.message, steps: [] });
+        }
+      }
     }
   })();
   return () => {
@@ -586,6 +605,11 @@ async function openSettings() {
   renderMspSettings();
   const f = $('#form-settings');
   for (const k of ['instancesDir', 'baseDomain', 'neo4jMemory', 'uiPortBase', 'apiPortBase', 'certLifetimeMonths', 'certRenewBeforeDays']) f[k].value = settings[k] ?? '';
+  f.managerUrls.value = (settings.managerUrls || []).join('\n');
+  const here = $('#btn-use-origin');
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+  here.classList.toggle('hidden', local || (settings.managerUrls || []).includes(location.origin));
+  here.textContent = `Add ${location.origin}`;
   for (const k of ['mode', 'accountId', 'tunnelId', 'zoneId', 'configPath', 'tunnelName']) f[`cf.${k}`].value = settings.cloudflare[k] ?? '';
   f['cf.apiToken'].value = '';
   f['cf.apiToken'].placeholder = settings.cloudflare.hasApiToken ? 'Saved — leave blank to keep' : 'Required for remotely-managed tunnels';
@@ -617,6 +641,13 @@ async function openSettings() {
 }
 
 $('#form-settings')['cf.mode'].addEventListener('change', syncModeFields);
+$('#btn-use-origin').addEventListener('click', () => {
+  const f = $('#form-settings');
+  const list = f.managerUrls.value.split(/\s+/).filter(Boolean);
+  if (!list.includes(location.origin)) list.push(location.origin);
+  f.managerUrls.value = list.join('\n');
+  $('#btn-use-origin').classList.add('hidden');
+});
 $('#form-settings').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const body = { cloudflare: {} };

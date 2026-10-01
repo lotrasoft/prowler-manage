@@ -79,6 +79,18 @@ The tunnel also makes the Microsoft sign-in popups work: they redirect to `http:
 
 **Back up `/var/lib/prowler-manage` and the master key together.** Without the master key, the stored certificate keys can't be decrypted, and the MSP app or dedicated apps then need new certificates uploaded by hand.
 
+### Using the manager through a Cloudflare hostname
+
+Instead of an SSH tunnel, you can publish the manager itself through your tunnel (e.g. `https://prowler-manager.example.com → http://localhost:4500`). Two things are then required:
+
+1. **Protect it with Cloudflare Access.** The manager has no login of its own. Without Access, anyone who finds the hostname can read Prowler admin passwords, approve tenants and delete instances. In Cloudflare Zero Trust, create an Access application for the hostname and allow only your administrators. While the manager is reached through Cloudflare without Access, it shows a red warning at the top of every page.
+2. **Add the hostname under Settings → Manager address.** Microsoft only sends a sign-in back to addresses registered for it, so the manager uses only addresses listed here (plus localhost). The first time you use a Microsoft sign-in from an unlisted address, the manager offers to add it.
+
+From a Cloudflare hostname, the Microsoft sign-ins work like this:
+- **Approve now (MSP app):** returns to the Cloudflare hostname. The first time, the manager adds that address to your MSP app's redirect URIs itself (the app can edit its own registration), then waits about 20 seconds for Microsoft to pick it up.
+- **Create MSP app** and **Create a dedicated app** sign in with Microsoft's Graph Command Line Tools client, which only allows `localhost`. From a Cloudflare hostname they use **device-code sign-in** instead: the popup shows a short code to enter at Microsoft's device login page. If your organization's Conditional Access blocks device-code sign-in, do these one-off steps from `http://localhost:4500` (on the server, or through `ssh -L 4500:localhost:4500 <server>`).
+- **Consent links** emailed to customers are unaffected.
+
 ### How private keys are protected on Linux
 
 Certificate private keys are encrypted with AES-256-GCM using a 32-byte master key. The key comes from the first available of:
@@ -205,7 +217,7 @@ Enter the tenant domain, tenant ID and client ID, then choose a certificate or a
 
 - Admin sign-in tokens stay in the manager's memory and are discarded as soon as a flow finishes. They're never written to disk.
 - The MSP-app setup and the dedicated-app sign-in use Microsoft's own **Microsoft Graph Command Line Tools** public client (`14d82eec-204b-4c2f-b7e8-296a70dab67e`), the same one `Connect-MgGraph` uses. If a tenant blocks it, register your own public client (redirect URI `http://localhost`) and set `setupClientId` in `data/settings.json`.
-- Microsoft redirects back to `http://localhost:<PORT>`, so the browser doing the sign-in must be on the machine running the manager. The consent link sent to customers doesn't have this restriction.
+- Microsoft redirects back to the address you're using the manager from: `http://localhost:<PORT>`, or a Cloudflare hostname listed under Settings → Manager address (see [Using the manager through a Cloudflare hostname](#using-the-manager-through-a-cloudflare-hostname)).
 
 ## Tenant authentication
 
@@ -257,6 +269,6 @@ Switching an instance between the two methods under Edit is supported. Switching
 ## Notes
 
 - **Secrets:** `data/instances.json` holds each instance's Prowler admin password and the generated stack secrets in plain text. It is git-ignored; keep the folder private. Certificate private keys in it are encrypted (master key on Linux, DPAPI on Windows). On Linux the folder is mode 0700 and its files 0600. The M365 client secret is never written to disk: it goes straight into Prowler, which stores it encrypted, and is kept only in memory until setup finishes.
-- **No manager login:** the manager listens on 127.0.0.1 only. Reach it through an SSH tunnel; don't expose it through Cloudflare.
+- **No manager login:** the manager listens on 127.0.0.1 only. Reach it through an SSH tunnel, or through Cloudflare **only behind Cloudflare Access**.
 - **Resources:** each instance runs 9 containers. Neo4j memory defaults to 512M per instance (Settings); upstream uses 1G.
 - **Status:** background jobs are held in memory. If the manager restarts during a job, the instance is marked as interrupted; use Launch to resume.
