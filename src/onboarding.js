@@ -3,10 +3,13 @@
 // msp-app  One-time. Sign in to the MSP's own tenant; create the multi-tenant "Prowler" app there
 //          (Prowler's application permissions, a certificate, self-ownership for renewal).
 //
-// msp      Per customer: "Approve now". Opens Microsoft's admin-consent screen for the MSP app in
-//          the customer tenant (prompt=admin_consent). Whoever approves, the customer's Global Admin
-//          or the MSP through GDAP, creates the enterprise app there. The same sign-in then assigns
-//          the Global Reader role to it (consent alone can't).
+// msp      Per customer: "Approve now", in two steps:
+//            1. Microsoft's admin-consent page for the MSP app in the customer tenant
+//               (/{tenant}/adminconsent). Whoever approves, the customer's Global Admin or the MSP
+//               through GDAP, creates the enterprise app there with all its permissions.
+//            2. A normal sign-in with the MSP app (its delegated permissions were just consented),
+//               used once to assign the Global Reader role, which consent alone can't do.
+//          If step 2 fails, the approval from step 1 still counts; Global Reader is reported missing.
 //
 // direct   Per customer, without the MSP app: a customer admin signs in, the manager creates a
 //          dedicated app registration in that tenant, then Microsoft's admin-consent page grants it.
@@ -25,8 +28,8 @@ const g = (scope) => `https://graph.microsoft.com/${scope}`;
 const SCOPES = {
   direct: ['openid', 'profile', g('User.Read'), g('Application.ReadWrite.All'), g('RoleManagement.ReadWrite.Directory')].join(' '),
   'msp-app': ['openid', 'profile', g('User.Read'), g('Application.ReadWrite.All'), g('AppRoleAssignment.ReadWrite.All')].join(' '),
-  // .default + prompt=admin_consent = consent to everything the MSP app declares.
-  msp: ['openid', 'profile', g('.default')].join(' '),
+  // Delegated permissions the MSP app declares; consented in step 1, used to assign Global Reader.
+  msp: ['openid', 'profile', g('User.Read'), g('RoleManagement.ReadWrite.Directory')].join(' '),
 };
 // Delegated permissions the MSP app declares so the "Approve now" sign-in can assign Global Reader.
 const MSP_DELEGATED = ['User.Read', 'RoleManagement.ReadWrite.Directory'];
@@ -124,7 +127,7 @@ export async function startSession({ kind = 'direct', name, customer, instanceId
     s.signInClientId = m.clientId;
     s.authority = s.tenantId;
     s.clientId = m.clientId;
-    extra.prompt = 'admin_consent';
+    delete extra.prompt; // the admin just signed in on the consent page; reuse that session
   }
   sessions.set(s.id, s);
   const params = new URLSearchParams({
@@ -138,7 +141,14 @@ export async function startSession({ kind = 'direct', name, customer, instanceId
     code_challenge_method: 'S256',
     ...extra,
   });
-  return { id: s.id, authUrl: `${LOGIN}/${s.authority}/oauth2/v2.0/authorize?${params}` };
+  const signInUrl = `${LOGIN}/${s.authority}/oauth2/v2.0/authorize?${params}`;
+  if (kind === 'msp') {
+    // Step 1 is the admin-consent page; step 2 (this sign-in) follows once it's approved.
+    s.signInUrl = signInUrl;
+    const consent = new URLSearchParams({ client_id: s.clientId, redirect_uri: redirectUri(), state: `${s.id}.mspconsent` });
+    return { id: s.id, authUrl: `${LOGIN}/${s.tenantId}/adminconsent?${consent}` };
+  }
+  return { id: s.id, authUrl: signInUrl };
 }
 
 function step(s, text) {
@@ -181,6 +191,23 @@ export async function handleRedirect(query) {
   if (!s) return '/onboarding.html?expired=1';
   const page = `/onboarding.html?id=${id}`;
 
+  if (s.kind === 'msp' && phase === 'mspconsent') {
+    if (query.error || String(query.admin_consent).toLowerCase() !== 'true') {
+      fail(s, new Error(query.error ? `${query.error}: ${(query.error_description || '').split(/\r?\n/)[0]}` : 'The permissions were not approved'));
+      return page;
+    }
+    s.consented = true;
+    step(s, 'Prowler app approved (enterprise app created in the customer tenant)');
+    step(s, 'Signing in once more to assign the Global Reader role…');
+    return s.signInUrl; // straight on to step 2
+  }
+  if (s.kind === 'msp' && phase === 'signin' && query.error && s.consented) {
+    step(s, `WARNING: sign-in for the Global Reader assignment failed (${(query.error_description || query.error).split(/\r?\n/)[0]})`);
+    s.status = 'working';
+    finishMspWithoutSignIn(s).catch((e) => fail(s, e));
+    return page;
+  }
+
   if (query.error) {
     // Right after creation a new app may not have replicated to the consent endpoint yet.
     if (phase === 'consent' && /AADSTS700016/.test(query.error_description || '') && (s.consentRetries = (s.consentRetries || 0) + 1) <= 6) {
@@ -198,7 +225,13 @@ export async function handleRedirect(query) {
     const next = { direct: directSetup, 'msp-app': createMspApp, msp: mspApproved }[s.kind];
     exchangeCode(s, query.code)
       .then(() => next(s))
-      .catch((e) => fail(s, e));
+      .catch((e) => {
+        if (s.kind !== 'msp' || !s.consented) return fail(s, e);
+        // The approval stands even if the Global Reader step didn't work out.
+        step(s, `WARNING: ${e.message}`);
+        s.token = null;
+        return finishMspWithoutSignIn(s).catch((e2) => fail(s, e2));
+      });
     return page;
   }
   if (phase === 'consent' && ['awaiting-consent', 'preparing-consent'].includes(s.status)) {
@@ -351,7 +384,6 @@ async function createMspApp(s) {
 
 async function mspApproved(s) {
   if (s.signInTenantId && s.signInTenantId !== s.tenantId) step(s, 'Signed in through partner (GDAP) access');
-  step(s, 'Prowler app approved');
   await organization(s);
   step(s, `Customer: ${s.orgName} (${s.tenantDomain})`);
   const sp = await graph(s, 'GET', `/servicePrincipals(appId='${s.clientId}')?$select=id`);
@@ -362,6 +394,23 @@ async function mspApproved(s) {
     store.patchInstance(s.instanceId, { tenantDomain: s.tenantDomain, mspConsent: { consented: true, globalReader: s.globalReader, checkedAt: new Date().toISOString() } });
   }
   step(s, 'Customer connected');
+  done(s);
+}
+
+/** Approved, but no delegated sign-in: finish with the app's own token; Global Reader as found. */
+async function finishMspWithoutSignIn(s) {
+  const cert = await msp.currentCert();
+  await waitForAppRoles(s, cert);
+  const info = await msp.inspectCustomer(s.tenantId, cert);
+  if (!info) throw new Error('The approval has not taken effect yet; try again in a few minutes');
+  s.orgName = info.orgName;
+  s.tenantDomain = info.tenantDomain;
+  s.globalReader = info.globalReader === true;
+  if (!s.globalReader) step(s, 'WARNING: Global Reader is not assigned; Exchange and Teams checks will fail until it is (use Approve on the instance later, or ask the customer)');
+  if (s.instanceId) {
+    store.patchInstance(s.instanceId, { tenantDomain: s.tenantDomain, mspConsent: { consented: true, globalReader: s.globalReader, checkedAt: new Date().toISOString() } });
+  }
+  step(s, `Customer connected: ${s.orgName}`);
   done(s);
 }
 
