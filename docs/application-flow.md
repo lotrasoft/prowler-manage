@@ -38,6 +38,11 @@ sequenceDiagram
     Admin->>Server: Create instance / Launch
     Server->>Prowler: rewriteConfig + writeStack
     Prowler->>Docker: docker compose up -d
+    opt api marked unhealthy during first-boot migrations
+        Prowler->>Docker: docker compose logs api (tail)
+        Prowler->>Prowler: waitApi() until /health/live answers
+        Prowler->>Docker: docker compose up -d (retry once)
+    end
     Docker-->>Prowler: services start
     Prowler->>Prowler: waitHealthy()
     Server->>M365: consent / app setup / connection validation

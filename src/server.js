@@ -150,8 +150,11 @@ async function launch(inst, creds, log, job) {
   try {
     await prowler.compose(inst, ['up', '-d', '--remove-orphans'], log);
   } catch (e) {
-    // Slow first boots can trip a dependency healthcheck; the second attempt usually succeeds.
-    log(`First start attempt failed (${e.message}); retrying once`);
+    // Slow first boots (API migrations) can trip a dependency healthcheck. The API container keeps
+    // running, so wait for it to answer before starting the dependants again.
+    log(`First start attempt failed (${e.message}); waiting for the API before retrying`);
+    await prowler.compose(inst, ['logs', '--tail', '30', 'api'], log).catch(() => {});
+    await prowler.waitApi(inst, log);
     await prowler.compose(inst, ['up', '-d', '--remove-orphans'], log);
   }
   await prowler.waitHealthy(inst, log);

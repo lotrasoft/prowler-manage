@@ -43,7 +43,7 @@ flowchart LR
 
 ## Port semantics
 
-The design avoids host-wide exposure. Each instance binds its UI/API to loopback only and uses per-instance ports. This behavior is created in the override file in [src/prowler.js](../src/prowler.js) and is described in [README.md](../README.md). Public exposure happens only after Cloudflare routing is configured, so traffic reaches the application through the tunnel instead of by exposing all container ports.
+The design avoids host-wide exposure. Each instance binds its UI/API to loopback only and uses per-instance ports. This behavior is created in the override file in [src/prowler.js](../src/prowler.js) and is described in [README.md](../README.md). Public exposure happens only after Cloudflare routing is configured, so traffic reaches the application through the tunnel instead of by exposing all container ports. The override also lengthens health-check grace periods (postgres 180s, neo4j 300s, api 600s) because a first boot on Docker Desktop bind mounts, and the API's Django migrations in particular, can outlast the upstream defaults; otherwise `worker` and `worker-beat` fail with "dependency failed to start: container ...-api-1 is unhealthy". If `up` still fails, `launch` logs the API's last output, waits up to 15 minutes for `/health/live`, and retries once.
 
 ## Update deployment semantics
 
