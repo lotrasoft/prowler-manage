@@ -84,7 +84,7 @@ The tunnel also makes the Microsoft sign-in popups work: they redirect to `http:
 Instead of an SSH tunnel, you can publish the manager itself through your tunnel (e.g. `https://prowler-manager.example.com → http://localhost:4500`). Two things are then required:
 
 1. **Protect it with Cloudflare Access.** The manager has no login of its own. Without Access, anyone who finds the hostname can read Prowler admin passwords, approve tenants and delete instances. In Cloudflare Zero Trust, create an Access application for the hostname and allow only your administrators. While the manager is reached through Cloudflare without Access, it shows a red warning at the top of every page.
-2. **Add the hostname under Settings → Manager address.** Microsoft only sends a sign-in back to addresses registered for it, so the manager uses only addresses listed here (plus localhost). The first time you use a Microsoft sign-in from an unlisted address, the manager offers to add it.
+2. **Use https.** Microsoft sign-ins return to the address in your browser automatically, which must be https (Cloudflare provides that) or localhost. Nothing to configure.
 
 From a Cloudflare hostname, the Microsoft sign-ins work like this:
 - **Approve now (MSP app):** returns to the Cloudflare hostname. The first time, the manager adds that address to your MSP app's redirect URIs itself (the app can edit its own registration), then waits about 20 seconds for Microsoft to pick it up.
@@ -125,7 +125,11 @@ The **Updates** button in the header shows where this copy was installed from: t
 
 **Git clone (development, Windows).**
 - The source is the clone's `origin` remote.
-- Updating runs `git pull --ff-only`, then `pnpm install`, then restarts the process. The new process logs to `data/manager.log`; under `pnpm dev` the watcher restarts it instead.
+- Updating runs `git pull --ff-only`, then `pnpm install`, then restarts:
+  - **Under a service manager** (systemd, pm2, or an NSSM/Windows service started with `PROWLER_MANAGE_SUPERVISED=1`), the manager exits with code 75 and the service manager starts the new version. systemd units need `Restart=on-failure` or `Restart=always`.
+  - **In a terminal**, it starts a fresh copy in the background, which logs to `data/manager.log`.
+  - **Under `pnpm dev`**, the file watcher restarts it.
+- If the code on disk is newer than the running process, for example after a manual `git pull`, a **Restart needed** banner appears until the manager is restarted.
 - Updates are refused while the clone has uncommitted changes or commits that aren't on GitHub.
 - Your existing git login is used, so private repositories work.
 
@@ -217,7 +221,7 @@ Enter the tenant domain, tenant ID and client ID, then choose a certificate or a
 
 - Admin sign-in tokens stay in the manager's memory and are discarded as soon as a flow finishes. They're never written to disk.
 - The MSP-app setup and the dedicated-app sign-in use Microsoft's own **Microsoft Graph Command Line Tools** public client (`14d82eec-204b-4c2f-b7e8-296a70dab67e`), the same one `Connect-MgGraph` uses. If a tenant blocks it, register your own public client (redirect URI `http://localhost`) and set `setupClientId` in `data/settings.json`.
-- Microsoft redirects back to the address you're using the manager from: `http://localhost:<PORT>`, or a Cloudflare hostname listed under Settings → Manager address (see [Using the manager through a Cloudflare hostname](#using-the-manager-through-a-cloudflare-hostname)).
+- Microsoft redirects back to the address in your browser: `http://localhost:<PORT>`, or an https address such as a Cloudflare hostname (see [Using the manager through a Cloudflare hostname](#using-the-manager-through-a-cloudflare-hostname)). The manager only uses an address when the request actually arrived on it, so another website can't send sign-ins elsewhere.
 
 ## Tenant authentication
 

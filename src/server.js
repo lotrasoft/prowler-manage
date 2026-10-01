@@ -181,25 +181,6 @@ async function launch(inst, creds, log, job) {
 
 // ---------- Settings ----------
 
-/** Public addresses of this manager (e.g. its Cloudflare hostname): https origins only. */
-function parseManagerUrls(value) {
-  const list = (Array.isArray(value) ? value : String(value).split(/[\s,]+/)).map((x) => x.trim()).filter(Boolean);
-  return [
-    ...new Set(
-      list.map((x) => {
-        let u;
-        try {
-          u = new URL(/^[a-z]+:\/\//i.test(x) ? x : `https://${x}`);
-        } catch {
-          throw new HttpError(400, `Invalid manager address: ${x}`);
-        }
-        if (u.protocol !== 'https:') throw new HttpError(400, `Manager address must use https: ${x}`);
-        return u.origin;
-      }),
-    ),
-  ];
-}
-
 app.get('/api/settings', wrap(async (req, res) => {
   const s = store.getSettings();
   const mspInfo = s.msp?.clientId ? { ...s.msp, cert: certSummary(s.msp.cert), instances: store.listInstances().filter((i) => i.authMethod === 'msp').length, busy: isBusy('msp') } : null;
@@ -241,7 +222,6 @@ app.put('/api/settings', wrap(async (req, res) => {
     uiPortBase: Number(b.uiPortBase) || cur.uiPortBase,
     apiPortBase: Number(b.apiPortBase) || cur.apiPortBase,
     neo4jMemory: b.neo4jMemory || cur.neo4jMemory,
-    managerUrls: b.managerUrls !== undefined ? parseManagerUrls(b.managerUrls) : cur.managerUrls || [],
     certLifetimeMonths: Math.min(24, Math.max(1, Number(b.certLifetimeMonths) || cur.certLifetimeMonths)),
     certRenewBeforeDays: Math.min(90, Math.max(1, Number(b.certRenewBeforeDays) || cur.certRenewBeforeDays)),
     cloudflare: cf,
@@ -279,10 +259,11 @@ app.get('/api/instances/:id/logs', wrap(async (req, res) => {
 app.post('/api/onboarding', wrap(async (req, res) => {
   const b = req.body || {};
   try {
-    // The browser's Origin header says which address the manager is being used from (localhost,
-    // or e.g. a Cloudflare hostname); sign-ins return there if it's an approved address.
+    // Sign-ins return to the address the browser is using (localhost, or e.g. a Cloudflare
+    // hostname): the Origin header, trusted only when it matches the Host the request arrived on.
     const origin = req.get('origin') || null;
-    res.json(await onboarding.startSession({ kind: b.kind, name: (b.name || '').trim(), customer: b.customer, instanceId: b.instanceId, origin }));
+    const host = req.get('x-forwarded-host') || req.get('host');
+    res.json(await onboarding.startSession({ kind: b.kind, name: (b.name || '').trim(), customer: b.customer, instanceId: b.instanceId, origin, host }));
   } catch (e) {
     throw new HttpError(400, e.message);
   }

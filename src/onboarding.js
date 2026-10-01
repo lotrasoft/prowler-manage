@@ -15,8 +15,8 @@
 //          dedicated app registration in that tenant, then Microsoft's admin-consent page grants it.
 //
 // Return address: Microsoft sends the browser back to the address the manager is being used from
-// (http://localhost:PORT, or a public address such as a Cloudflare hostname listed in Settings →
-// Manager address). The Graph Command Line Tools client only accepts localhost, so from a public
+// (http://localhost:PORT, or a public https address such as a Cloudflare hostname), taken from the
+// browser itself. The Graph Command Line Tools client only accepts localhost, so from a public
 // address the flows that use it (msp-app, direct) sign in with a device code instead.
 //
 // Admin tokens live only in memory and are dropped as soon as a flow finishes.
@@ -79,11 +79,11 @@ export function localRedirect(port = process.env.PORT || 4500) {
 export const isLocalUrl = (url) => new URL(url).hostname === 'localhost';
 
 /**
- * Where Microsoft should send the browser back to: the manager's address as the browser sees it.
- * Loopback addresses are always fine; anything else must be listed in Settings → Manager address,
- * so a sign-in can never be redirected to an address the operator didn't approve.
+ * Where Microsoft should send the browser back to: the address the browser is using the manager
+ * from. It's only trusted when the request really arrived on that address (Origin matches Host):
+ * true for the manager's own page, false for a request triggered by any other website.
  */
-export function resolveReturnUrl(origin) {
+export function resolveReturnUrl(origin, host) {
   if (!origin) return localRedirect();
   let u;
   try {
@@ -95,17 +95,13 @@ export function resolveReturnUrl(origin) {
     // Microsoft treats localhost specially (any port); 127.0.0.1 would need its own registration.
     return localRedirect(u.port || (u.protocol === 'https:' ? 443 : 80));
   }
-  const allowed = (store.getSettings().managerUrls || []).map((x) => {
-    try {
-      return new URL(x).origin;
-    } catch {
-      return null;
-    }
-  });
-  if (allowed.includes(u.origin)) return u.origin;
-  const err = new Error(`This manager is being used from ${u.origin}, which isn't listed under Settings → Manager address. Add it there first (it must be the address Microsoft sends you back to).`);
-  err.code = 'UNLISTED_ORIGIN';
-  throw err;
+  if (!host || u.host.toLowerCase() !== String(host).toLowerCase()) {
+    throw new Error('Microsoft sign-in must be started from the manager\'s own page');
+  }
+  if (u.protocol !== 'https:') {
+    throw new Error(`Microsoft only returns to https addresses (or localhost); open the manager at https://${u.host}`);
+  }
+  return u.origin;
 }
 
 function publicSession(s) {
@@ -140,13 +136,13 @@ export function discardSession(id) {
 }
 
 /** Begin a flow; returns the Microsoft URL to open in a popup. */
-export async function startSession({ kind = 'direct', name, customer, instanceId, origin }) {
+export async function startSession({ kind = 'direct', name, customer, instanceId, origin, host }) {
   for (const [id, s] of sessions) if (Date.now() - s.createdAt > SESSION_TTL) sessions.delete(id);
   if (!SCOPES[kind]) throw new Error(`Unknown connection type ${kind}`);
   const settings = store.getSettings();
   const s = { id: crypto.randomBytes(16).toString('hex'), kind, name: name || 'Prowler', status: 'signing-in', steps: [], createdAt: Date.now() };
   s.verifier = crypto.randomBytes(32).toString('base64url');
-  s.redirect = resolveReturnUrl(origin);
+  s.redirect = resolveReturnUrl(origin, host);
   s.signInClientId = settings.setupClientId;
   s.authority = 'organizations';
   const extra = { prompt: 'select_account' };
