@@ -14,3 +14,8 @@ sequenceDiagram
     Manager->>Docker: initialize Prowler provider and schedule
     Manager->>Cloudflare: publish hostname if configured
     Cloudflare-->>Operator: public URL available
+    opt Azure row action
+        Operator->>Manager: sign in as subscription Owner / UAA
+        Manager->>Tenant: assign Reader + ProwlerRole on each subscription (ARM)
+        Manager->>Docker: register azure providers in Prowler
+    end

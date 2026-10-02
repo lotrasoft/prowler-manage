@@ -9,5 +9,11 @@ flowchart TD
     F --> I[certs.js]
     I --> J[secrets.js]
     E --> K[Microsoft Graph]
+    B --> N[azure.js]
+    D --> N
+    F --> N
+    N --> O[Azure Resource Manager]
+    N --> K
+    N --> G
     G --> L[Cloudflare tunnel]
     H --> M[Prowler services]

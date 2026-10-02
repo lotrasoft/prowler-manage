@@ -30,6 +30,8 @@ flowchart TB
     Docker --> Prowler[Prowler stack\nUI, API, worker, postgres, valkey, neo4j]
     Tunnel --> Public[Customer-facing hostname]
     Entra --> M365[Microsoft 365 tenant]
+    Core --> ARM[Azure Resource Manager]
+    ARM --> Subs[Azure subscriptions]
 ```
 
 ## Core components
@@ -46,6 +48,8 @@ The application stores state in JSON files rather than a database. [src/store.js
 ### 4. Identity and certificate automation
 Multi-tenant Microsoft Entra integration is implemented in [src/msp.js](../src/msp.js), [src/onboarding.js](../src/onboarding.js), and [src/certs.js](../src/certs.js). The system can create app registrations, accept consent, assign directory roles, generate self-signed certificates, and auto-renew them using Graph `addKey` and `removeKey` calls.
 
+Azure subscription onboarding is implemented in [src/azure.js](../src/azure.js). An admin signs in to the customer tenant with a delegated Azure Resource Manager token (Azure CLI public client). The manager then creates or updates the custom `ProwlerRole` and assigns `Reader` and `ProwlerRole` to the instance app's service principal on every enabled subscription. Finally it registers each subscription as an `azure` provider in Prowler through [src/prowler.js](../src/prowler.js). Prowler's Azure provider only accepts a client secret. For certificate and MSP instances the manager adds one with Graph `addPassword` (the app acting on itself) and rotates it from the renewal scheduler in [src/renewal.js](../src/renewal.js).
+
 ### 5. Runtime supervision and updates
 The manager supports self-update and self-healing for its own process. [src/updater.js](../src/updater.js) manages version detection and update checks, and the Linux service files in [deploy/](../deploy) orchestrate root-run updates via systemd path/service units.
 
@@ -55,4 +59,4 @@ The design assumes a single trusted host machine is running the manager, Docker,
 
 ## Non-detected architecture elements
 
-No Azure deployment or Terraform/Bicep files are present in this repository. The system interacts with Azure identity endpoints indirectly through Microsoft Entra and Microsoft Graph, but it does not define Azure infrastructure as code in the codebase.
+No Azure deployment or Terraform/Bicep files are present in this repository. The system calls Microsoft Entra, Microsoft Graph and, for Azure subscription onboarding, Azure Resource Manager (role definitions and role assignments only). It does not define Azure infrastructure as code.

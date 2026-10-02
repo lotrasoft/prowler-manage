@@ -263,6 +263,17 @@ Paste the secret when you create the instance. It's sent to Prowler and never wr
 
 Switching an instance between the two methods under Edit is supported. Switching to a certificate starts over at step 1.
 
+## Azure subscriptions
+
+**Azure** on a ready instance adds the tenant's Azure subscriptions to Prowler, following [Prowler's Azure requirements](https://docs.prowler.com/user-guide/providers/azure/authentication). It uses the instance's existing app (MSP app, dedicated app or existing app registration). That app already has the Graph permissions Prowler's Azure provider needs (`AuditLog.Read.All`, `Directory.Read.All`, `Policy.Read.All`), because they are part of the Microsoft 365 set.
+
+1. Sign in, in the popup, as an **Owner** or **User Access Administrator** of the subscriptions. A Global Administrator without Azure access can grant themselves User Access Administrator under Entra ID → Properties → Access management for Azure resources. The sign-in uses Microsoft's Azure CLI client. From a public (Cloudflare) address it uses a device code, as the other sign-ins do.
+2. The manager lists every enabled subscription in the tenant. It creates the custom role **ProwlerRole** (`Microsoft.Web/sites/host/listkeys/action`, `Microsoft.Web/sites/config/list/Action`), or reuses one that is already assignable there. On each subscription it then assigns the app's service principal **Reader** and **ProwlerRole**. A subscription where this fails is skipped with a warning.
+3. Prowler's Azure provider only accepts a client secret. For certificate and MSP instances the manager adds one to the app registration itself, using the same self-ownership and `Application.ReadWrite.OwnedBy` that certificate renewal uses. The secret lasts as long as a certificate (`certLifetimeMonths`) and is renewed automatically `certRenewBeforeDays` before it expires. For MSP instances the secret lives on the MSP app, one per instance. Instances that use a client secret are asked for it again. In both cases the secret is sent to Prowler only and never written to disk.
+4. Each subscription is registered in Prowler as an Azure provider, with a connection test and a daily scan.
+
+Run it again to pick up new subscriptions or repair role assignments. Deleting the instance removes the manager-created secret. The role assignments stay on the subscriptions; the delete log lists them so you can remove them under Access control (IAM).
+
 ## Operations
 
 | Action | What happens |
@@ -272,6 +283,7 @@ Switching an instance between the two methods under Edit is supported. Switching
 | **Stop** | `docker compose stop` |
 | **Edit** | Change the name, hostname (the tunnel route and DNS record are moved), authentication method or app credentials (the Prowler secret is updated and the connection re-tested). Optionally upgrades to the latest Prowler release (downloads new compose files, pulls, recreates; the API runs migrations on start). The tenant domain can't be changed. |
 | **Renew cert** | Renews the tenant certificate now (see above). |
+| **Azure** | Assigns Prowler's roles on the tenant's Azure subscriptions and adds them to Prowler (see [Azure subscriptions](#azure-subscriptions)). Shown once the instance is set up and running. |
 | **Sign-in** | Shows the Prowler admin email and password for the instance. |
 | **Logs** | Tail of `docker compose logs`, filterable by service. |
 | **Delete** | Removes the tunnel route and DNS record, then runs `docker compose down -v` and deletes the instance folder. This destroys all scan data. |

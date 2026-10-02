@@ -74,6 +74,15 @@ function credentialCell(i) {
   return [h('span', { class: `pill ${cls}`, title: `${cur.thumbprint}\nexpires ${new Date(cur.notAfter).toLocaleString()}` }, label), sub, prev];
 }
 
+function azureCell(i) {
+  const az = i.azure;
+  if (!az?.subscriptions?.length) return null;
+  const names = az.subscriptions.map((s) => s.name).join(', ');
+  if (az.renewError) return h('span', { class: 'errtext', title: az.renewError }, `Azure secret renewal failed: ${az.renewError}`);
+  const n = az.subscriptions.length;
+  return h('div', { class: 'sub', title: names }, `Azure: ${n} subscription${n === 1 ? '' : 's'}`);
+}
+
 function rowButton(act, label, inst, { disabled = false, cls = '' } = {}) {
   return h('button', { class: `btn sm ${cls}`, disabled, onclick: () => action(act, inst) }, label);
 }
@@ -83,7 +92,7 @@ function render() {
     const running = i.runtime === 'running' || i.runtime === 'degraded';
     return h('tr', {},
       h('td', {}, h('b', {}, i.name), h('div', { class: 'sub' }, i.slug)),
-      h('td', {}, i.tenantDomain, h('div', { class: 'sub' }, i.tenantId)),
+      h('td', {}, i.tenantDomain, h('div', { class: 'sub' }, i.tenantId), azureCell(i)),
       h('td', {},
         link(i.url, i.hostname || i.localUrl),
         h('div', { class: 'sub' }, 'local: ', link(i.localUrl, `:${i.uiPort}`), ` · api :${i.apiPort}`)),
@@ -98,6 +107,7 @@ function render() {
         rowButton('logs', 'Logs', i),
         i.credential?.method === 'msp' && (!i.credential.consent?.consented || i.credential.consent.globalReader === false) && rowButton('approve', 'Approve', i),
         i.credential?.method === 'certificate' && i.credential.current?.verified && rowButton('renew', 'Renew cert', i, { disabled: i.busy }),
+        i.init?.done && running && rowButton('azure', 'Azure', i, { disabled: i.busy }),
         i.busy && i.lastJobId && rowButton('job', 'Progress', i),
         rowButton('delete', 'Delete', i, { disabled: i.busy, cls: 'danger-text' }))));
   });
@@ -411,6 +421,48 @@ function approveInstance(inst) {
 }
 $('#dlg-approve').addEventListener('close', () => approveStop?.());
 
+// "Azure" on a ready instance: assign Prowler's roles on the tenant's Azure subscriptions (src/azure.js).
+let azureStop = null;
+let azureInst = null;
+function openAzure(inst) {
+  azureStop?.();
+  azureInst = inst;
+  const secretMode = inst.credential?.method === 'secret';
+  $('#azure-title').textContent = `Connect Azure subscriptions · ${inst.name}`;
+  $('#azure-secret-row').classList.toggle('hidden', !secretMode);
+  $('#azure-secret').value = '';
+  $('#azure-secret-note').textContent = secretMode
+    ? "Prowler's Azure provider uses the same app and client secret as Microsoft 365. Enter the secret again; it is sent to Prowler only."
+    : "Prowler's Azure provider only accepts a client secret, so the manager adds one to the app registration and renews it before it expires. It is sent to Prowler only.";
+  const n = inst.azure?.subscriptions?.length;
+  $('#azure-status').textContent = n ? `Connected: ${inst.azure.subscriptions.map((s) => s.name).join(', ')}. Run again to add new subscriptions or repair roles.` : '';
+  $('#azure-status').className = 'small muted';
+  $('#azure-steps').replaceChildren();
+  $('#btn-azure-start').disabled = false;
+  $('#dlg-azure').showModal();
+}
+$('#btn-azure-start').addEventListener('click', () => {
+  const inst = azureInst;
+  const clientSecret = $('#azure-secret').value;
+  if (inst.credential?.method === 'secret' && !clientSecret) {
+    $('#azure-status').textContent = "Enter the app's client secret first";
+    $('#azure-status').className = 'small error-inline';
+    return;
+  }
+  azureStop?.();
+  $('#btn-azure-start').disabled = true;
+  azureStop = popupSession({ kind: 'azure', instanceId: inst.id, clientSecret }, (s) => {
+    if (renderSession(s, $('#azure-status'), $('#azure-steps'), () => 'Azure subscriptions connected. The first scans are starting in Prowler.')) {
+      $('#azure-secret').value = '';
+      refresh();
+    } else if (s.status === 'error') $('#btn-azure-start').disabled = false;
+  });
+});
+$('#dlg-azure').addEventListener('close', () => {
+  azureStop?.();
+  $('#azure-secret').value = '';
+});
+
 // ---------- Jobs ----------
 
 function showJob(jobId) {
@@ -480,6 +532,7 @@ async function action(act, inst) {
       const r = await api('POST', `/api/instances/${inst.id}/renew-certificate`);
       showJob(r.jobId);
     } else if (act === 'approve') return approveInstance(inst);
+    else if (act === 'azure') return openAzure(inst);
     else if (act === 'edit') openEdit(inst);
     else if (act === 'job') showJob(inst.lastJobId);
     else if (act === 'creds') {

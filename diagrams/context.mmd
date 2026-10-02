@@ -7,4 +7,6 @@ flowchart LR
     Core --> CF[Cloudflare tunnel]
     Docker --> Prowler[Prowler App tenant instances]
     Entra --> M365[Microsoft 365 tenant]
+    Core --> ARM[Azure Resource Manager]
+    ARM --> Subs[Azure subscriptions]
     CF --> Public[Public hostname]

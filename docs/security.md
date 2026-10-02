@@ -22,6 +22,12 @@ The manager supports different tenant connection models in [src/server.js](../sr
 
 Each mode is designed to require explicit consent and to assign roles such as Global Reader only after approval. Default patterns are described in [README.md](../README.md).
 
+## Azure subscription access
+
+Azure onboarding ([src/azure.js](../src/azure.js)) needs an admin's delegated Azure Resource Manager token with Owner or User Access Administrator on the subscriptions. Like the other sign-in tokens, it lives only in memory for the duration of the flow. The app's service principal receives only `Reader` and the custom `ProwlerRole`, which adds two read actions on App Service (`Microsoft.Web/sites/host/listkeys/action`, `Microsoft.Web/sites/config/list/Action`), per Prowler's documented requirements.
+
+Prowler's Azure provider only accepts a client secret. For certificate and MSP instances the manager adds a password credential to the app registration through the app's own `Application.ReadWrite.OwnedBy` permission. The secret text goes straight to Prowler and is never written to the manager's disk. Only its key ID and expiry are stored, so it can be rotated before expiry and removed when the instance is deleted. For MSP instances these passwords sit on the shared MSP app, one per instance, so the MSP app's credential list grows with the number of Azure-connected instances. A client secret typed in for a secret-based instance is held in memory only until the flow ends.
+
 ## Cloudflare access
 
 The manager uses Cloudflare as an ingress and strongly warns that the service itself is not protected by login unless Cloudflare Access is configured. The app detects Cloudflare headers and surfaces a red warning when the manager is reached without Access. The relevant logic lives in [src/server.js](../src/server.js) and the operational guidance in [README.md](../README.md).
@@ -36,6 +42,7 @@ flowchart TD
     UI --> API[Express API]
     API --> Secret[Encrypted secrets\nsecrets.js]
     API --> Entra[Microsoft Graph + Entra]
+    API --> ARM[Azure Resource Manager role assignments]
     API --> Tunnel[Cloudflare tunnel]
     API --> Docker[Docker daemon]
 

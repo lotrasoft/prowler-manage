@@ -14,6 +14,10 @@
 // direct   Per customer, without the MSP app: a customer admin signs in, the manager creates a
 //          dedicated app registration in that tenant, then Microsoft's admin-consent page grants it.
 //
+// azure    Per instance: an admin with Owner or User Access Administrator on the customer's Azure
+//          subscriptions signs in (Azure CLI's public client, Azure Resource Manager scope); the
+//          manager assigns Prowler's roles on every subscription and registers them (src/azure.js).
+//
 // Return address: Microsoft sends the browser back to the address the manager is being used from
 // (http://localhost:PORT, or a public https address such as a Cloudflare hostname), taken from the
 // browser itself. The Graph Command Line Tools client only accepts localhost, so from a public
@@ -23,6 +27,8 @@
 import crypto from 'node:crypto';
 import * as store from './store.js';
 import * as msp from './msp.js';
+import * as azure from './azure.js';
+import { isBusy } from './jobs.js';
 import { createCertificate, sealCertificate, openCertificate, EntraApp, jwtClaims, clientAssertion } from './certs.js';
 
 const LOGIN = 'https://login.microsoftonline.com';
@@ -36,6 +42,7 @@ const SCOPES = {
   'msp-app-update': ['openid', 'profile', g('User.Read'), g('Application.ReadWrite.All'), g('AppRoleAssignment.ReadWrite.All')].join(' '),
   // Delegated permissions the MSP app declares; consented in step 1, used to assign Global Reader.
   msp: ['openid', 'profile', g('User.Read'), g('RoleManagement.ReadWrite.Directory')].join(' '),
+  azure: azure.SIGN_IN_SCOPE,
 };
 // Delegated permissions the MSP app declares so the "Approve now" sign-in can assign Global Reader.
 const MSP_DELEGATED = ['User.Read', 'RoleManagement.ReadWrite.Directory'];
@@ -109,7 +116,7 @@ export function resolveReturnUrl(origin, host) {
 }
 
 function publicSession(s) {
-  const { verifier, token, cert, deviceCode, ...pub } = s;
+  const { verifier, token, cert, deviceCode, clientSecret, ...pub } = s;
   return pub;
 }
 
@@ -140,7 +147,7 @@ export function discardSession(id) {
 }
 
 /** Begin a flow; returns the Microsoft URL to open in a popup. */
-export async function startSession({ kind = 'direct', name, customer, instanceId, origin, host }) {
+export async function startSession({ kind = 'direct', name, customer, instanceId, clientSecret, origin, host }) {
   for (const [id, s] of sessions) if (Date.now() - s.createdAt > SESSION_TTL) sessions.delete(id);
   if (!SCOPES[kind]) throw new Error(`Unknown connection type ${kind}`);
   const settings = store.getSettings();
@@ -182,11 +189,24 @@ export async function startSession({ kind = 'direct', name, customer, instanceId
     }
     s.redirect = pick;
     s.signInRedirect = pick;
+  } else if (kind === 'azure') {
+    const inst = store.getInstance(instanceId);
+    if (!inst) throw new Error('Instance not found');
+    if (!inst.init?.done) throw new Error('Finish setting up the instance first (Launch)');
+    if (isBusy(inst.id)) throw new Error('Another operation is running for this instance');
+    if (inst.authMethod === 'secret' && !clientSecret) throw new Error("Enter the app's client secret");
+    s.instanceId = inst.id;
+    s.tenantId = inst.tenantId;
+    s.orgName = inst.name;
+    s.tenantDomain = inst.tenantDomain;
+    s.clientSecret = inst.authMethod === 'secret' ? clientSecret : null;
+    s.signInClientId = AZURE_CLI_CLIENT;
+    s.authority = inst.tenantId;
   }
   sessions.set(s.id, s);
 
-  // Public address + Graph Command Line Tools (localhost-only): sign in with a device code.
-  if (kind !== 'msp' && !isLocalUrl(s.base) && s.signInClientId === DEFAULT_SETUP_CLIENT) {
+  // Public address + a localhost-only public client: sign in with a device code.
+  if (kind !== 'msp' && !isLocalUrl(s.base) && [DEFAULT_SETUP_CLIENT, AZURE_CLI_CLIENT].includes(s.signInClientId)) {
     await startDeviceCode(s);
     return { id: s.id, authUrl: `/onboarding.html?id=${s.id}` };
   }
@@ -212,10 +232,12 @@ export async function startSession({ kind = 'direct', name, customer, instanceId
 }
 
 const DEFAULT_SETUP_CLIENT = '14d82eec-204b-4c2f-b7e8-296a70dab67e';
+// Azure CLI: a Microsoft public client pre-authorized for Azure Resource Manager (localhost or device code).
+const AZURE_CLI_CLIENT = '04b07795-8ddb-461a-bbee-02f9e1bf7b46';
 
 /** Device-code sign-in: the admin enters a short code at microsoft.com/devicelogin. */
 async function startDeviceCode(s) {
-  const res = await fetch(`${LOGIN}/organizations/oauth2/v2.0/devicecode`, {
+  const res = await fetch(`${LOGIN}/${s.authority}/oauth2/v2.0/devicecode`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ client_id: s.signInClientId, scope: SCOPES[s.kind] }),
@@ -231,11 +253,11 @@ async function startDeviceCode(s) {
 }
 
 async function pollDeviceCode(s, interval, deadline) {
-  const next = { direct: directSetup, 'msp-app': createMspApp, 'msp-app-update': updateMspApp }[s.kind];
+  const next = { direct: directSetup, 'msp-app': createMspApp, 'msp-app-update': updateMspApp, azure: azureSetup }[s.kind];
   while (Date.now() < deadline) {
     await sleep(interval * 1000);
     if (s.status !== 'device-code') return; // abandoned or failed
-    const res = await fetch(`${LOGIN}/organizations/oauth2/v2.0/token`, {
+    const res = await fetch(`${LOGIN}/${s.authority}/oauth2/v2.0/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ client_id: s.signInClientId, grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: s.deviceCode }),
@@ -265,11 +287,13 @@ function fail(s, err) {
   s.status = 'error';
   s.error = err.message || String(err);
   s.token = null;
+  s.clientSecret = null;
 }
 
 function done(s) {
   s.status = 'done';
   s.token = null;
+  s.clientSecret = null;
 }
 
 async function graph(s, method, path, body) {
@@ -328,7 +352,7 @@ export async function handleRedirect(query) {
 
   if (phase === 'signin' && s.status === 'signing-in' && query.code) {
     s.status = 'working';
-    const next = { direct: directSetup, 'msp-app': createMspApp, 'msp-app-update': updateMspApp, msp: mspApproved }[s.kind];
+    const next = { direct: directSetup, 'msp-app': createMspApp, 'msp-app-update': updateMspApp, msp: mspApproved, azure: azureSetup }[s.kind];
     exchangeCode(s, query.code)
       .then(() => next(s))
       .catch((e) => {
@@ -640,5 +664,16 @@ async function waitForPermissions(s) {
   s.token = null;
   await waitForAppRoles(s, await openCertificate(s.cert));
   step(s, 'Tenant connected');
+  done(s);
+}
+
+// ---------- azure: roles on the customer's Azure subscriptions ----------
+
+async function azureSetup(s) {
+  const inst = store.getInstance(s.instanceId);
+  if (!inst) throw new Error('Instance not found');
+  if (s.signInTenantId && s.signInTenantId !== inst.tenantId) step(s, `Signed in to ${inst.tenantDomain} as a guest or partner account`);
+  await azure.connect(inst, s.token, s.clientSecret, (text) => step(s, text));
+  step(s, 'Azure subscriptions connected');
   done(s);
 }

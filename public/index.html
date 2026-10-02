@@ -239,6 +239,20 @@
     </div>
   </dialog>
 
+  <!-- Connect Azure subscriptions -->
+  <dialog id="dlg-azure">
+    <h2 id="azure-title">Connect Azure subscriptions</h2>
+    <p class="small">Adds every enabled Azure subscription in this tenant to Prowler. Sign in as an <b>Owner</b> or <b>User Access Administrator</b> of the subscriptions. On each one the manager assigns the app the <b>Reader</b> role and Prowler's custom <b>ProwlerRole</b>, then registers the subscription in Prowler with a daily scan.</p>
+    <p class="small muted" id="azure-secret-note"></p>
+    <label class="hidden" id="azure-secret-row">App client secret<input id="azure-secret" type="password" autocomplete="off"></label>
+    <p id="azure-status" class="small muted"></p>
+    <ul id="azure-steps" class="steps small"></ul>
+    <div class="dlg-actions">
+      <button class="btn ghost" onclick="closeDialog('dlg-azure')">Close</button>
+      <button class="btn primary" id="btn-azure-start">Sign in to Azure</button>
+    </div>
+  </dialog>
+
   <!-- Self-update -->
   <dialog id="dlg-update" class="wide">
     <h2>Prowler Manager updates</h2>

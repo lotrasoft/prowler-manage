@@ -10,6 +10,7 @@ import * as tunnel from './cloudflare.js';
 import * as renewal from './renewal.js';
 import * as onboarding from './onboarding.js';
 import * as msp from './msp.js';
+import * as azure from './azure.js';
 import { masterKeySource, checkMasterKey } from './secrets.js';
 import { startJob, getJob, isBusy, busyKeys } from './jobs.js';
 import * as updater from './updater.js';
@@ -268,7 +269,7 @@ app.post('/api/onboarding', wrap(async (req, res) => {
     // hostname): the Origin header, trusted only when it matches the Host the request arrived on.
     const origin = req.get('origin') || null;
     const host = req.get('x-forwarded-host') || req.get('host');
-    res.json(await onboarding.startSession({ kind: b.kind, name: (b.name || '').trim(), customer: b.customer, instanceId: b.instanceId, origin, host }));
+    res.json(await onboarding.startSession({ kind: b.kind, name: (b.name || '').trim(), customer: b.customer, instanceId: b.instanceId, clientSecret: b.clientSecret, origin, host }));
   } catch (e) {
     throw new HttpError(400, e.message);
   }
@@ -512,6 +513,7 @@ app.delete('/api/instances/:id', wrap(async (req, res) => {
   const deleteApp = req.query.deleteApp === '1';
   const job = startJob(inst.id, `Delete ${inst.name}`, 'deleting', async (log) => {
     const settings = store.getSettings();
+    await azure.cleanup(inst, log);
     if (inst.authMethod === 'msp') {
       log(`Note: the "${store.getSettings().msp?.displayName || 'Prowler'}" enterprise app stays in ${inst.tenantDomain}; the customer can remove it under Enterprise applications`);
     } else if (deleteApp) await renewal.deleteAppRegistration(inst, log);

@@ -324,6 +324,76 @@ export async function updateCredentials(inst, creds, log) {
     data: { type: 'providers', id: providerId, attributes: { alias: inst.name } },
   }).catch((e) => log(`WARNING: could not rename provider: ${e.message}`));
   await testConnection(api, providerId, log);
+  // Instances on a client secret use the same secret for their Azure subscriptions.
+  if (inst.authMethod === 'secret' && creds.clientSecret && inst.azure?.subscriptions?.length) {
+    await updateAzureSecrets(inst, creds, log, api);
+  }
+}
+
+const azureSecret = (creds) => ({ tenant_id: creds.tenantId, client_id: creds.clientId, client_secret: creds.clientSecret });
+
+/**
+ * Register Azure subscriptions as providers (uid = subscription ID) with the app's credentials, test
+ * them and schedule daily scans. Idempotent; `known` holds the records of an earlier run.
+ */
+export async function connectAzure(inst, subs, creds, known, log) {
+  const api = new ProwlerApi(inst);
+  await api.login(inst.adminEmail, inst.adminPassword);
+  const records = [];
+  for (const sub of subs) {
+    const rec = { id: sub.id, name: sub.name, ...known.find((k) => k.id === sub.id) };
+    const alias = `${inst.name} · ${sub.name}`;
+    if (!rec.providerId) {
+      const existing = await api.call('GET', `/providers?filter[provider]=azure&filter[uid]=${sub.id}`);
+      rec.providerId = existing.data?.[0]?.id
+        || (await api.call('POST', '/providers', { data: { type: 'providers', attributes: { provider: 'azure', uid: sub.id, alias } } })).data.id;
+      log(`Prowler: registered Azure subscription ${sub.name}`);
+    }
+    if (!rec.secretId) {
+      const provider = await api.call('GET', `/providers/${rec.providerId}`);
+      rec.secretId = provider.data?.relationships?.secret?.data?.id || null;
+    }
+    if (rec.secretId) {
+      await api.call('PATCH', `/providers/secrets/${rec.secretId}`, {
+        data: { type: 'provider-secrets', id: rec.secretId, attributes: { secret_type: 'static', secret: azureSecret(creds) } },
+      });
+    } else {
+      rec.secretId = (await api.call('POST', '/providers/secrets', {
+        data: {
+          type: 'provider-secrets',
+          attributes: { secret_type: 'static', name: `${inst.name} Azure`, secret: azureSecret(creds) },
+          relationships: { provider: { data: { type: 'providers', id: rec.providerId } } },
+        },
+      })).data.id;
+    }
+    await testConnection(api, rec.providerId, log);
+    if (!rec.schedule) {
+      try {
+        await api.call('POST', '/schedules/daily', { data: { type: 'daily-schedules', attributes: { provider_id: rec.providerId } } });
+        log(`Prowler: daily scan scheduled for ${sub.name} (first scan starts now)`);
+      } catch (e) {
+        log(`WARNING: could not schedule daily scan for ${sub.name}: ${e.message}`);
+      }
+      rec.schedule = true;
+    }
+    records.push(rec);
+  }
+  return records;
+}
+
+/** Switch every Azure provider of the instance to new credentials (secret renewal). */
+export async function updateAzureSecrets(inst, creds, log, api) {
+  if (!api) {
+    api = new ProwlerApi(inst);
+    await api.login(inst.adminEmail, inst.adminPassword);
+  }
+  for (const rec of inst.azure?.subscriptions || []) {
+    if (!rec.secretId) continue;
+    await api.call('PATCH', `/providers/secrets/${rec.secretId}`, {
+      data: { type: 'provider-secrets', id: rec.secretId, attributes: { secret_type: 'static', secret: azureSecret(creds) } },
+    });
+  }
+  log(`Updated the Azure client secret in Prowler for ${inst.azure.subscriptions.length} subscription(s)`);
 }
 
 /**

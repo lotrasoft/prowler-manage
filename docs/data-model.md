@@ -47,6 +47,7 @@ classDiagram
         +cert
         +secrets
         +init
+        +azure
     }
 
     class RuntimeDir {
@@ -59,6 +60,8 @@ classDiagram
     Settings --> Instance
     Instance --> RuntimeDir
 ```
+
+The optional `azure` field on an instance records the Azure subscriptions connected by [src/azure.js](../src/azure.js). For each subscription it keeps the ID, the name, and the Prowler provider and secret IDs. It also holds `appSecret`, the key ID and expiry of the manager-created client secret (never the secret itself), plus the last renewal error, if any.
 
 ## Data model conclusion
 

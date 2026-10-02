@@ -89,7 +89,33 @@ sequenceDiagram
     Manager-->>Admin: proceed to instance launch
 ```
 
-## 5. Update flow
+## 5. Azure subscription onboarding
+The **Azure** row action is implemented in [src/azure.js](../src/azure.js), started through the `azure` sign-in kind in [src/onboarding.js](../src/onboarding.js).
+
+```mermaid
+sequenceDiagram
+    participant Admin as Subscription Owner / UAA
+    participant Manager as Manager
+    participant MS as Microsoft sign-in
+    participant ARM as Azure Resource Manager
+    participant Graph as Microsoft Graph
+    participant P as Prowler
+
+    Admin->>Manager: Azure (row action)
+    Manager->>MS: sign in to customer tenant (Azure CLI client, ARM scope)
+    MS-->>Manager: delegated ARM token
+    Manager->>ARM: list enabled subscriptions
+    Manager->>Graph: app-only token, look up app service principal
+    Manager->>ARM: create/update ProwlerRole
+    Manager->>ARM: assign Reader + ProwlerRole on each subscription
+    opt certificate or MSP instance
+        Manager->>Graph: addPassword on the app registration (app acting on itself)
+    end
+    Manager->>P: register azure providers, store secret, test, schedule daily scan
+    Note over Manager,Graph: renewal scheduler rotates the secret before expiry
+```
+
+## 6. Update flow
 The self-update mechanism is represented by [src/updater.js](../src/updater.js) and the root-owned systemd units in [deploy/prowler-manage-update.path](../deploy/prowler-manage-update.path) and [deploy/prowler-manage-update.service](../deploy/prowler-manage-update.service). The logic is designed to avoid in-place mutation while the service is running and to switch to a staged replacement when the update succeeds.
 
 ```mermaid

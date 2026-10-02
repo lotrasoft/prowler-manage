@@ -12,6 +12,7 @@
 import * as store from './store.js';
 import * as prowler from './prowler.js';
 import * as msp from './msp.js';
+import * as azure from './azure.js';
 import { startJob, isBusy } from './jobs.js';
 import { createCertificate, sealCertificate, openCertificate, EntraApp, findKeyCredential } from './certs.js';
 
@@ -321,6 +322,11 @@ function tick() {
     }
   }
   for (const inst of store.listInstances()) {
+    // Client secret the manager created for the instance's Azure subscriptions (src/azure.js).
+    if (azure.renewalDue(inst) && !isBusy(inst.id)) {
+      startJob(inst.id, `Renew Azure client secret · ${inst.name}`, null, (log) => azure.renewSecret(inst, log));
+      continue;
+    }
     if (inst.authMethod !== 'certificate' || !inst.init?.done) continue;
     try {
       scheduleHolder(instanceHolder(inst), inst.id);
