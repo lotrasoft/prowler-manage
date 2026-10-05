@@ -5,10 +5,13 @@
 //
 // msp      Per customer: "Approve now", in two steps:
 //            1. Microsoft's admin-consent page for the MSP app in the customer tenant
-//               (/{tenant}/adminconsent). Whoever approves, the customer's Global Admin or the MSP
+//               (/{tenant}/adminconsent). Whoever approves, a customer Privileged Role Admin or the MSP
 //               through GDAP, creates the enterprise app there with all its permissions.
-//            2. A normal sign-in with the MSP app (its delegated permissions were just consented),
-//               used once to assign the Global Reader role, which consent alone can't do.
+//            2. A sign-in with Microsoft's Graph Command Line Tools client (localhost, or a device
+//               code from a public address), used once to assign the Global Reader role, which
+//               consent alone can't do. The MSP app itself declares no delegated permissions, so
+//               customers never grant it a standing RoleManagement.ReadWrite.Directory consent;
+//               a grant left by older versions is removed here.
 //          If step 2 fails, the approval from step 1 still counts; Global Reader is reported missing.
 //
 // direct   Per customer, without the MSP app: a customer admin signs in, the manager creates a
@@ -29,7 +32,7 @@ import * as store from './store.js';
 import * as msp from './msp.js';
 import * as azure from './azure.js';
 import { isBusy } from './jobs.js';
-import { createCertificate, sealCertificate, openCertificate, EntraApp, jwtClaims, clientAssertion } from './certs.js';
+import { createCertificate, sealCertificate, openCertificate, EntraApp, jwtClaims } from './certs.js';
 
 const LOGIN = 'https://login.microsoftonline.com';
 const GRAPH = 'https://graph.microsoft.com/v1.0';
@@ -40,12 +43,13 @@ const SCOPES = {
   direct: ['openid', 'profile', g('User.Read'), g('Application.ReadWrite.All'), g('RoleManagement.ReadWrite.Directory')].join(' '),
   'msp-app': ['openid', 'profile', g('User.Read'), g('Application.ReadWrite.All'), g('AppRoleAssignment.ReadWrite.All')].join(' '),
   'msp-app-update': ['openid', 'profile', g('User.Read'), g('Application.ReadWrite.All'), g('AppRoleAssignment.ReadWrite.All')].join(' '),
-  // Delegated permissions the MSP app declares; consented in step 1, used to assign Global Reader.
+  // "Approve now" step 2 (Graph Command Line Tools, the admin's own token): assign Global Reader.
   msp: ['openid', 'profile', g('User.Read'), g('RoleManagement.ReadWrite.Directory')].join(' '),
+  // Re-approving an existing customer: also remove the delegated grant older versions left behind.
+  'msp-cleanup': ['openid', 'profile', g('User.Read'), g('RoleManagement.ReadWrite.Directory'), g('DelegatedPermissionGrant.ReadWrite.All')].join(' '),
   azure: azure.SIGN_IN_SCOPE,
 };
-// Delegated permissions the MSP app declares so the "Approve now" sign-in can assign Global Reader.
-const MSP_DELEGATED = ['User.Read', 'RoleManagement.ReadWrite.Directory'];
+const scopesFor = (s) => SCOPES[s.kind === 'msp' && s.cleanupGrant ? 'msp-cleanup' : s.kind];
 
 // Application permissions Prowler's M365 provider uses, per resource API. Missing APIs (e.g. Teams
 // in a tenant without Teams) are skipped with a warning.
@@ -116,7 +120,7 @@ export function resolveReturnUrl(origin, host) {
 }
 
 function publicSession(s) {
-  const { verifier, token, cert, deviceCode, clientSecret, ...pub } = s;
+  const { verifier, token, refreshToken, cert, deviceCode, clientSecret, ...pub } = s;
   return pub;
 }
 
@@ -176,11 +180,11 @@ export async function startSession({ kind = 'direct', name, customer, instanceId
       throw new Error(`This tenant already has an instance ("${existing.name}")`);
     }
     s.instanceId = instanceId || null;
-    s.signInClientId = m.clientId;
+    s.cleanupGrant = Boolean(existing);
     s.authority = s.tenantId;
     s.clientId = m.clientId;
     delete extra.prompt; // the admin just signed in on the consent page; reuse that session
-    // Microsoft only returns to addresses registered on the MSP app (when it was created, or with
+    // The consent page returns to an address registered on the MSP app (when it was created, or with
     // Settings → Re-approve MSP app). Apps from older versions were registered without the path.
     const registered = await msp.registeredRedirects();
     const pick = [s.base + CALLBACK_PATH, s.base, `${s.base}/`].find((u) => registered.includes(u));
@@ -188,7 +192,6 @@ export async function startSession({ kind = 'direct', name, customer, instanceId
       throw new Error(`${s.base} is not a return address of the MSP app. Open Settings → Re-approve MSP app from this address once to register it, or use the manager from a registered address (${registered.filter((u) => !u.includes('nativeclient')).join(', ') || 'none'}).`);
     }
     s.redirect = pick;
-    s.signInRedirect = pick;
   } else if (kind === 'azure') {
     const inst = store.getInstance(instanceId);
     if (!inst) throw new Error('Instance not found');
@@ -215,7 +218,7 @@ export async function startSession({ kind = 'direct', name, customer, instanceId
     response_type: 'code',
     redirect_uri: s.signInRedirect,
     response_mode: 'query',
-    scope: SCOPES[kind],
+    scope: scopesFor(s),
     state: `${s.id}.signin`,
     code_challenge: crypto.createHash('sha256').update(s.verifier).digest('base64url'),
     code_challenge_method: 'S256',
@@ -240,7 +243,7 @@ async function startDeviceCode(s) {
   const res = await fetch(`${LOGIN}/${s.authority}/oauth2/v2.0/devicecode`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ client_id: s.signInClientId, scope: SCOPES[s.kind] }),
+    body: new URLSearchParams({ client_id: s.signInClientId, scope: scopesFor(s) }),
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`Device sign-in unavailable: ${(json.error_description || json.error || res.statusText).split(/\r?\n/)[0]}`);
@@ -249,11 +252,12 @@ async function startDeviceCode(s) {
   s.verificationUri = json.verification_uri;
   s.status = 'device-code';
   step(s, 'Waiting for the sign-in code to be entered at Microsoft');
-  pollDeviceCode(s, Number(json.interval) || 5, Date.now() + (Number(json.expires_in) || 900) * 1000).catch((e) => fail(s, e));
+  pollDeviceCode(s, Number(json.interval) || 5, Date.now() + (Number(json.expires_in) || 900) * 1000)
+    .catch((e) => (s.kind === 'msp' && s.consented ? mspSignInFailed(s, e) : fail(s, e)));
 }
 
 async function pollDeviceCode(s, interval, deadline) {
-  const next = { direct: directSetup, 'msp-app': createMspApp, 'msp-app-update': updateMspApp, azure: azureSetup }[s.kind];
+  const next = { direct: directSetup, 'msp-app': createMspApp, 'msp-app-update': updateMspApp, msp: mspApproved, azure: azureSetup }[s.kind];
   while (Date.now() < deadline) {
     await sleep(interval * 1000);
     if (s.status !== 'device-code') return; // abandoned or failed
@@ -287,12 +291,14 @@ function fail(s, err) {
   s.status = 'error';
   s.error = err.message || String(err);
   s.token = null;
+  s.refreshToken = null;
   s.clientSecret = null;
 }
 
 function done(s) {
   s.status = 'done';
   s.token = null;
+  s.refreshToken = null;
   s.clientSecret = null;
 }
 
@@ -306,7 +312,7 @@ async function graph(s, method, path, body) {
   const json = text ? JSON.parse(text) : {};
   if (!res.ok) {
     const msg = json.error?.message || res.statusText;
-    const hint = res.status === 403 ? ' (sign in as a Global Administrator or Privileged Role Administrator; through GDAP, your role for this customer must include one of them)' : '';
+    const hint = res.status === 403 ? ' (sign in as a Privileged Role Administrator; through GDAP, your role for this customer must include it)' : '';
     const err = new Error(`${method} ${path.split('?')[0]} → ${res.status}: ${msg}${hint}`);
     err.status = res.status;
     throw err;
@@ -329,12 +335,14 @@ export async function handleRedirect(query) {
     s.consented = true;
     step(s, 'Prowler app approved (enterprise app created in the customer tenant)');
     step(s, 'Signing in once more to assign the Global Reader role…');
-    return s.signInUrl; // straight on to step 2
+    if (isLocalUrl(s.base)) return s.signInUrl; // straight on to step 2
+    // Graph Command Line Tools only returns to localhost: from a public address, use a device code.
+    startDeviceCode(s).catch((e) => mspSignInFailed(s, e));
+    return page;
   }
   if (s.kind === 'msp' && phase === 'signin' && query.error && s.consented) {
-    step(s, `WARNING: sign-in for the Global Reader assignment failed (${(query.error_description || query.error).split(/\r?\n/)[0]})`);
     s.status = 'working';
-    finishMspWithoutSignIn(s).catch((e) => fail(s, e));
+    mspSignInFailed(s, new Error(`sign-in for the Global Reader assignment failed (${(query.error_description || query.error).split(/\r?\n/)[0]})`));
     return page;
   }
 
@@ -355,13 +363,7 @@ export async function handleRedirect(query) {
     const next = { direct: directSetup, 'msp-app': createMspApp, 'msp-app-update': updateMspApp, msp: mspApproved, azure: azureSetup }[s.kind];
     exchangeCode(s, query.code)
       .then(() => next(s))
-      .catch((e) => {
-        if (s.kind !== 'msp' || !s.consented) return fail(s, e);
-        // The approval stands even if the Global Reader step didn't work out.
-        step(s, `WARNING: ${e.message}`);
-        s.token = null;
-        return finishMspWithoutSignIn(s).catch((e2) => fail(s, e2));
-      });
+      .catch((e) => (s.kind === 'msp' && s.consented ? mspSignInFailed(s, e) : fail(s, e)));
     return page;
   }
   if (phase === 'consent' && ['awaiting-consent', 'preparing-consent'].includes(s.status)) {
@@ -385,13 +387,8 @@ async function exchangeCode(s, code) {
     code,
     redirect_uri: s.signInRedirect,
     code_verifier: s.verifier,
-    scope: SCOPES[s.kind],
+    scope: scopesFor(s),
   };
-  if (s.kind === 'msp') {
-    // The MSP app is a confidential client: authenticate with its certificate.
-    form.client_assertion_type = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
-    form.client_assertion = clientAssertion(await msp.currentCert(), s.tenantId, s.signInClientId);
-  }
   const res = await fetch(`${LOGIN}/${s.authority}/oauth2/v2.0/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -405,6 +402,8 @@ async function exchangeCode(s, code) {
 function acceptTokens(s, json) {
   const idClaims = jwtClaims(json.id_token);
   s.token = json.access_token;
+  // Azure: kept to redeem a Graph token for the same admin if the app can't add its own secret.
+  if (s.kind === 'azure') s.refreshToken = json.refresh_token || null;
   s.signInTenantId = idClaims.tid;
   s.signedInAs = idClaims.preferred_username || idClaims.name;
   step(s, `Signed in as ${s.signedInAs}`);
@@ -473,15 +472,12 @@ function mspReturnUrls(s, existing = []) {
   return [...new Set([...existing, localRedirect() + CALLBACK_PATH, s.redirect, msp.NATIVE_REDIRECT])];
 }
 
-/** Prowler's permissions plus the delegated ones the MSP app uses for "Approve now". */
+/**
+ * Prowler's application permissions only. No delegated permissions: the "Approve now" sign-in uses
+ * Graph Command Line Tools, so customers never consent to a delegated grant for the MSP app.
+ */
 async function mspPermissions(s) {
-  const { access, graphSp } = await resourceAccess(s, { includeOwnedBy: false });
-  const graphEntry = access.find((a) => a.resourceAppId === GRAPH_APP_ID);
-  for (const value of MSP_DELEGATED) {
-    const scope = graphSp.oauth2PermissionScopes.find((p) => p.value === value);
-    if (scope) graphEntry.resourceAccess.push({ id: scope.id, type: 'Scope' });
-  }
-  return { access, graphSp };
+  return resourceAccess(s, { includeOwnedBy: false });
 }
 
 /** Self-ownership + Application.ReadWrite.OwnedBy (MSP tenant only), for certificate self-renewal. */
@@ -511,7 +507,7 @@ async function updateMspApp(s) {
   const { access, graphSp } = await mspPermissions(s);
   const redirectUris = mspReturnUrls(s, app.web?.redirectUris || []);
   await graph(s, 'PATCH', `/applications/${app.id}`, { requiredResourceAccess: access, web: { redirectUris } });
-  step(s, `Updated "${app.displayName}": return address ${s.redirect}, permissions refreshed`);
+  step(s, `Updated "${app.displayName}": return address ${s.redirect}, permissions refreshed (application permissions only; no delegated permissions)`);
   const sp = await graph(s, 'GET', `/servicePrincipals(appId='${app.appId}')?$select=id`);
   await ensureSelfRenewal(s, app.id, sp.id, graphSp);
   step(s, 'Checked self-ownership and certificate self-renewal permission');
@@ -569,6 +565,7 @@ async function mspApproved(s) {
   step(s, `Customer: ${s.orgName} (${s.tenantDomain})`);
   const sp = await graph(s, 'GET', `/servicePrincipals(appId='${s.clientId}')?$select=id`);
   s.globalReader = await assignGlobalReader(s, sp.id);
+  if (s.cleanupGrant) await removeDelegatedGrants(s, sp.id);
   s.token = null;
   await waitForAppRoles(s, await msp.currentCert());
   if (s.instanceId) {
@@ -576,6 +573,29 @@ async function mspApproved(s) {
   }
   step(s, 'Customer connected');
   done(s);
+}
+
+/**
+ * Older versions had the MSP app declare delegated User.Read + RoleManagement.ReadWrite.Directory,
+ * so admin consent left a tenant-wide delegated grant. Prowler only uses application permissions;
+ * remove the grant.
+ */
+async function removeDelegatedGrants(s, spId) {
+  try {
+    const grants = await graph(s, 'GET', `/oauth2PermissionGrants?$filter=clientId eq '${spId}'`);
+    for (const grant of grants.value) await graph(s, 'DELETE', `/oauth2PermissionGrants/${grant.id}`);
+    if (grants.value.length) step(s, `Removed the Prowler app's delegated permission grant (${grants.value.map((x) => x.scope.trim()).join(', ')}); it only needs its application permissions`);
+  } catch (e) {
+    step(s, `WARNING: could not remove the Prowler app's old delegated permission grant (${e.message}); remove it in the Entra admin center under Enterprise applications → the Prowler app → Permissions`);
+  }
+}
+
+/** The Global Reader sign-in failed after approval: the approval stands; finish without it. */
+function mspSignInFailed(s, err) {
+  step(s, `WARNING: ${err.message}`);
+  s.token = null;
+  s.status = 'working';
+  return finishMspWithoutSignIn(s).catch((e) => fail(s, e));
 }
 
 /** Approved, but no delegated sign-in: finish with the app's own token; Global Reader as found. */
@@ -673,7 +693,20 @@ async function azureSetup(s) {
   const inst = store.getInstance(s.instanceId);
   if (!inst) throw new Error('Instance not found');
   if (s.signInTenantId && s.signInTenantId !== inst.tenantId) step(s, `Signed in to ${inst.tenantDomain} as a guest or partner account`);
-  await azure.connect(inst, s.token, s.clientSecret, (text) => step(s, text));
+  await azure.connect(inst, s.token, s.clientSecret, (text) => step(s, text), () => adminGraphToken(s));
   step(s, 'Azure subscriptions connected');
   done(s);
+}
+
+/** Graph token for the admin who signed in for Azure (same Azure CLI sign-in, refresh token). */
+async function adminGraphToken(s) {
+  if (!s.refreshToken) throw new Error('The sign-in did not return a refresh token; sign in again');
+  const res = await fetch(`${LOGIN}/${s.authority}/oauth2/v2.0/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: s.signInClientId, grant_type: 'refresh_token', refresh_token: s.refreshToken, scope: 'https://graph.microsoft.com/.default offline_access' }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Could not get a Microsoft Graph token for your sign-in: ${(json.error_description || json.error || res.statusText).split(/\r?\n/)[0]}`);
+  return json.access_token;
 }

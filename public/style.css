@@ -91,9 +91,12 @@ td:last-child { white-space: normal; width: 1%; }
 .pill.busy::before { background: var(--warn); animation: pulse 1s infinite alternate; }
 @keyframes pulse { to { opacity: .3; } }
 
+/* The dialog scrolls as a whole; its action bar (.dlg-actions, always the last element) sticks to the
+   bottom edge. No bottom padding, so the bar sits flush with the edge and covers content scrolling under it. */
 dialog {
-  border: 1px solid var(--border); border-radius: 12px; padding: 22px;
+  border: 1px solid var(--border); border-radius: 12px; padding: 22px 22px 0;
   background: var(--surface); color: var(--text); width: min(620px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain;
 }
 dialog.wide { width: min(1000px, calc(100vw - 32px)); }
 dialog::backdrop { background: rgb(0 0 0 / .45); }
@@ -108,7 +111,10 @@ input, select, textarea {
 }
 input:focus, select:focus { outline: 2px solid var(--primary); outline-offset: -1px; }
 input:disabled { opacity: .6; }
-.dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.dlg-actions {
+  display: flex; justify-content: flex-end; gap: 8px; margin: 18px -22px 0; padding: 12px 22px 22px;
+  position: sticky; bottom: 0; z-index: 1; background: var(--surface); border-top: 1px solid var(--border);
+}
 .hint { color: var(--muted); margin: 12px 0 0; }
 .error { margin-top: 12px; padding: 8px 12px; border-radius: 7px; background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
 .banner { margin-bottom: 16px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: color-mix(in srgb, var(--warn) 12%, var(--surface)); }

@@ -1,5 +1,5 @@
 // MSP mode: one multi-tenant "Prowler" app registered in the MSP's own tenant. Each customer tenant
-// approves it once through Microsoft's admin-consent URL (the customer's Global Admin, or the MSP
+// approves it once through Microsoft's admin-consent URL (a customer Privileged Role Administrator, or the MSP
 // itself through GDAP), which creates the enterprise app in the customer tenant. All MSP instances
 // authenticate with the MSP app's certificate; tenant_id selects the customer.
 import * as store from './store.js';
@@ -44,7 +44,7 @@ export async function registeredRedirects() {
   return uris;
 }
 
-/** The link a customer's Global Admin opens to approve the MSP app in their tenant. */
+/** The link a customer admin (Privileged Role Administrator) opens to approve the MSP app in their tenant. */
 export function consentLink(tenantId) {
   const params = new URLSearchParams({ client_id: config().clientId, redirect_uri: NATIVE_REDIRECT });
   return `${LOGIN}/${tenantId}/adminconsent?${params}`;
@@ -104,7 +104,7 @@ export async function ensureConsent(inst, save, log, job) {
     if (job) {
       job.notice = [
         `Waiting for ${inst.tenantDomain} to approve the Prowler app.`,
-        'Send this link to the customer\'s Global Administrator, or open it yourself if you have Global Administrator there through GDAP:',
+        'Send this link to a customer admin with the Privileged Role Administrator role, or open it yourself if you have that role there through GDAP:',
         '',
         link,
         '',

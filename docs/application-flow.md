@@ -76,7 +76,7 @@ The onboarding flow is implemented in [src/onboarding.js](../src/onboarding.js) 
 
 ```mermaid
 sequenceDiagram
-    participant Admin as Global admin
+    participant Admin as Privileged Role Admin
     participant Manager as Manager
     participant MS as Microsoft sign-in
     participant Graph as Entra Graph
@@ -85,7 +85,10 @@ sequenceDiagram
     Manager->>MS: start sign-in / consent
     MS-->>Manager: callback + tenant context
     Manager->>Graph: create app or enterprise app relationship
-    Manager->>Graph: assign required directory roles / permissions
+    Manager->>Graph: assign Global Reader (admin's own token; MSP: Graph CLI client, no delegated grant to the MSP app)
+    opt re-approving an existing MSP instance
+        Manager->>Graph: delete delegated grants older versions left for the MSP app
+    end
     Manager-->>Admin: proceed to instance launch
 ```
 
@@ -110,6 +113,11 @@ sequenceDiagram
     Manager->>ARM: assign Reader + ProwlerRole on each subscription
     opt certificate or MSP instance
         Manager->>Graph: addPassword on the app registration (app acting on itself)
+        opt 403 and the registration is in the customer tenant (certificate instance)
+            Manager->>MS: redeem the admin's refresh token for a Graph token (same Azure CLI sign-in)
+            Manager->>Graph: addPassword as the admin
+            Manager->>Graph: best effort: make the app an owner of itself, grant Application.ReadWrite.OwnedBy
+        end
     end
     Manager->>P: register azure providers, store secret, test, schedule daily scan
     Note over Manager,Graph: renewal scheduler rotates the secret before expiry

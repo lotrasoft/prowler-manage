@@ -177,8 +177,8 @@ New instance offers three ways to connect a customer's Microsoft 365 tenant.
 
 | Option | Who signs in | What ends up in the customer's tenant |
 |---|---|---|
-| **Through my MSP app** (default) | You, through GDAP, or the customer's Global Admin | An enterprise app for your MSP app, created by admin consent |
-| **Create a dedicated app** | A Global Admin of the customer's tenant | A dedicated app registration owned by the customer |
+| **Through my MSP app** (default) | You, through GDAP, or a customer Privileged Role Administrator | An enterprise app for your MSP app, created by admin consent |
+| **Create a dedicated app** | A Privileged Role Administrator of the customer's tenant | A dedicated app registration owned by the customer |
 | **Use an existing app registration** | Nobody; you enter the IDs | Whatever you already set up |
 
 All three request the same permissions for Prowler:
@@ -186,17 +186,39 @@ All three request the same permissions for Prowler:
 - **Other APIs:** `Exchange.ManageAsApp` (Office 365 Exchange Online) and `application_access` (Skype and Teams Tenant Admin API)
 - **Directory role:** **Global Reader**, which the Exchange and Teams checks require
 
+### Least privilege
+
+The Prowler app never gets Global Administrator, or any role that can change the tenant's configuration. Everything it holds is read-only, except `Application.ReadWrite.OwnedBy`, which only lets it manage its own app registration (to renew its own certificate or Azure client secret).
+
+| What | Why it's needed | Narrower option |
+|---|---|---|
+| Graph `*.Read.All` application permissions above | Exactly the list in [Prowler's M365 guide](https://docs.prowler.com/user-guide/providers/microsoft365/authentication) | On an existing registration, `Directory.Read.All` can be swapped for `Domain.Read.All` + `Organization.Read.All`, but several Entra checks then fail |
+| Global Reader | Prowler's Exchange Online and Teams PowerShell checks run app-only and need a directory role. Global Reader is the read-only role Prowler documents | None documented by Prowler |
+| `Exchange.ManageAsApp`, Teams `application_access` | Let the app sign in to those APIs. What it can do there is limited by Global Reader | None |
+| `Application.ReadWrite.OwnedBy` | Certificate / Azure secret self-renewal. Limited to registrations the app owns (only itself). For the MSP app it exists in your MSP tenant only | On an existing registration, leave it out and renew by hand |
+| Azure **Reader** + **ProwlerRole** | [Prowler's Azure guide](https://docs.prowler.com/user-guide/providers/azure/authentication). ProwlerRole's two actions (`Microsoft.Web/sites/host/listkeys/action`, `Microsoft.Web/sites/config/list/Action`) can read Function keys and App Service settings, which may hold secrets. Prowler needs them for four `app_function_*` checks | Remove the ProwlerRole assignment if you'd rather lose those four checks |
+
+The **people** who sign in during setup don't need Global Administrator either. Their tokens live only in memory for the length of the flow:
+
+| Step | Least-privileged admin role |
+|---|---|
+| Create MSP app (your tenant), Create a dedicated app (customer tenant) | Privileged Role Administrator, to grant Microsoft Graph application permissions and assign Global Reader. Also Application Developer or Cloud Application Administrator if the tenant stops users registering apps |
+| Customer approval of the MSP app (Approve now, consent link, Approve) | Privileged Role Administrator, directly or through GDAP |
+| Azure | User Access Administrator on the subscriptions. If the app can't add its own secret, the fallback also needs Cloud Application Administrator or ownership of the registration |
+
+Microsoft notes that some tenants' consent policies still require Global Administrator to grant Microsoft Graph application permissions. If consent fails with Privileged Role Administrator, activate Global Administrator just for that step (for example a time-limited PIM activation). The app itself still doesn't get the role.
+
 ### Through my MSP app (for client tenants)
 
-**One-time setup: Settings → MSP app → Create MSP app.** Sign in as a Global Administrator of *your own* (MSP) tenant. The manager creates a multi-tenant app named **Prowler – <your organization>** there:
+**One-time setup: Settings → MSP app → Create MSP app.** Sign in to *your own* (MSP) tenant as a Privileged Role Administrator (see [Least privilege](#least-privilege)). The manager creates a multi-tenant app named **Prowler – <your organization>** there:
 - It requests the permissions above from each customer.
-- It also has two delegated permissions, `User.Read` and `RoleManagement.ReadWrite.Directory`, so that "Approve now" can assign Global Reader.
+- It declares **no delegated permissions**, so customers never grant it a standing delegated consent. (Older versions declared `User.Read` and `RoleManagement.ReadWrite.Directory`. Settings → **Re-approve MSP app** removes them from the app, and **Approve** on an existing instance deletes the grant they left in that customer's tenant.)
 - Its credential is a certificate that renews automatically. For that, the app is an owner of itself and holds `Application.ReadWrite.OwnedBy` **in your tenant only**; this is never requested from customers.
 - Its redirect URIs are `http://localhost:<PORT>` and Microsoft's `…/oauth2/nativeclient` blank page.
 
 **Per customer:** enter the customer's domain (any verified domain, e.g. `contoso.com`). The manager looks up the tenant ID from it. Then either:
-- **Approve now.** A popup opens Microsoft's admin-consent page for your app in the customer's tenant. Sign in with your partner account; with GDAP you need Global Administrator, or Privileged Role Administrator plus Cloud Application Administrator, for that customer. The customer's Global Admin can also sign in on this machine. Clicking **Accept** makes Microsoft create the enterprise app in their tenant. The popup then signs you in once more, usually without asking again, so the manager can assign Global Reader. If that second step fails, the approval still stands and the instance shows **Global Reader missing**.
-- **Just click Create.** The install starts straight away. The progress dialog shows the **consent link**, also available from **Copy consent link**, for you to send to the customer's Global Administrator. After they accept, Microsoft shows a blank page; that's expected. The manager checks every 15 seconds and carries on with setup. If nobody approves within an hour, the job stops; click **Launch** after they approve.
+- **Approve now.** A popup opens Microsoft's admin-consent page for your app in the customer's tenant. Sign in with your partner account; with GDAP your role for that customer needs Privileged Role Administrator. A customer admin with that role can also sign in on this machine. Clicking **Accept** makes Microsoft create the enterprise app in their tenant. The popup then signs you in once more with Microsoft's Graph Command Line Tools client (with a device code from a public address), so the manager can assign Global Reader with your own short-lived token. If that second step fails, the approval still stands and the instance shows **Global Reader missing**.
+- **Just click Create.** The install starts straight away. The progress dialog shows the **consent link**, also available from **Copy consent link**, for you to send to a customer admin with the Privileged Role Administrator role. After they accept, Microsoft shows a blank page; that's expected. The manager checks every 15 seconds and carries on with setup. If nobody approves within an hour, the job stops; click **Launch** after they approve.
 
 Consent alone can't assign a directory role. If the customer approved through the link, the Credential column shows **Global Reader missing**. Use the instance's **Approve** button to sign in (through GDAP or as their admin) and assign it, or have the customer assign Global Reader to your app under *Roles & admins*.
 
@@ -208,7 +230,7 @@ Customers' consent screens show your app as **unverified** until you complete [p
 
 ### Create a dedicated app in the customer's tenant
 
-1. **Sign in.** A popup opens Microsoft's sign-in page. Sign in as a Global Administrator of the customer's tenant. Microsoft asks you to let the manager create applications (`Application.ReadWrite.All`) and assign directory roles (`RoleManagement.ReadWrite.Directory`). The tenant ID and domain come from the sign-in.
+1. **Sign in.** A popup opens Microsoft's sign-in page. Sign in as a Privileged Role Administrator of the customer's tenant (plus Application Developer or Cloud Application Administrator if users there can't register apps). Microsoft asks you to let the manager create applications (`Application.ReadWrite.All`) and assign directory roles (`RoleManagement.ReadWrite.Directory`). The tenant ID and domain come from the sign-in.
 2. **Registration.** The manager creates **Prowler – <name>** in that tenant with:
    - the permissions above, plus `Application.ReadWrite.OwnedBy` so it can renew its own certificate
    - a newly generated certificate (no secret is ever created)
@@ -267,9 +289,9 @@ Switching an instance between the two methods under Edit is supported. Switching
 
 **Azure** on a ready instance adds the tenant's Azure subscriptions to Prowler, following [Prowler's Azure requirements](https://docs.prowler.com/user-guide/providers/azure/authentication). It uses the instance's existing app (MSP app, dedicated app or existing app registration). That app already has the Graph permissions Prowler's Azure provider needs (`AuditLog.Read.All`, `Directory.Read.All`, `Policy.Read.All`), because they are part of the Microsoft 365 set.
 
-1. Sign in, in the popup, as an **Owner** or **User Access Administrator** of the subscriptions. A Global Administrator without Azure access can grant themselves User Access Administrator under Entra ID → Properties → Access management for Azure resources. The sign-in uses Microsoft's Azure CLI client. From a public (Cloudflare) address it uses a device code, as the other sign-ins do.
+1. Sign in, in the popup, as a **User Access Administrator** (or **Owner**) of the subscriptions. User Access Administrator is enough: it can create the custom role and the role assignments, and it can't change resources. A Global Administrator without Azure access can grant themselves User Access Administrator under Entra ID → Properties → Access management for Azure resources. The sign-in uses Microsoft's Azure CLI client. From a public (Cloudflare) address it uses a device code, as the other sign-ins do.
 2. The manager lists every enabled subscription in the tenant. It creates the custom role **ProwlerRole** (`Microsoft.Web/sites/host/listkeys/action`, `Microsoft.Web/sites/config/list/Action`), or reuses one that is already assignable there. On each subscription it then assigns the app's service principal **Reader** and **ProwlerRole**. A subscription where this fails is skipped with a warning.
-3. Prowler's Azure provider only accepts a client secret. For certificate and MSP instances the manager adds one to the app registration itself, using the same self-ownership and `Application.ReadWrite.OwnedBy` that certificate renewal uses. The secret lasts as long as a certificate (`certLifetimeMonths`) and is renewed automatically `certRenewBeforeDays` before it expires. For MSP instances the secret lives on the MSP app, one per instance. Instances that use a client secret are asked for it again. In both cases the secret is sent to Prowler only and never written to disk.
+3. Prowler's Azure provider only accepts a client secret. For certificate and MSP instances the manager adds one to the app registration itself, using the same self-ownership and `Application.ReadWrite.OwnedBy` that certificate renewal uses. If a certificate instance's own app registration lacks that (for example an existing registration you brought), the admin's Azure sign-in adds the secret instead (needs Application Administrator, Cloud Application Administrator or ownership of the registration) and also tries to make the app an owner of itself with `Application.ReadWrite.OwnedBy` so it can renew the secret later; if that grant fails, the job log says so. MSP instances have no such fallback: restore the MSP app with Settings → Re-approve MSP app. The secret lasts as long as a certificate (`certLifetimeMonths`) and is renewed automatically `certRenewBeforeDays` before it expires. For MSP instances the secret lives on the MSP app, one per instance. Instances that use a client secret are asked for it again. In both cases the secret is sent to Prowler only and never written to disk.
 4. Each subscription is registered in Prowler as an Azure provider, with a connection test and a daily scan.
 
 Run it again to pick up new subscriptions or repair role assignments. Deleting the instance removes the manager-created secret. The role assignments stay on the subscriptions; the delete log lists them so you can remove them under Access control (IAM).

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Prowler Manager</title>
-  <link rel="icon" href="icon-white.png" type="image/png">
+  <link rel="icon" href="icon-black.png" type="image/png">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -71,7 +71,7 @@
             <label>Customer domain<input name="mspCustomer" placeholder="contoso.com or contoso.onmicrosoft.com" autocomplete="off"></label>
             <p class="small" style="margin:10px 0">The customer approves <b id="msp-app-name">your Prowler app</b> once through Microsoft's admin-consent page. That creates the enterprise app in their tenant.</p>
             <ul class="small" style="margin:0 0 10px;padding-left:18px">
-              <li><b>Approve now:</b> sign in as the customer's Global Administrator, or with your partner account through GDAP (Global Administrator, or Privileged Role Administrator + Cloud Application Administrator).</li>
+              <li><b>Approve now:</b> sign in as a customer admin with the <b>Privileged Role Administrator</b> role, or with your partner account through GDAP with that role. Global Administrator is not required.</li>
               <li><b>Or just click Create:</b> the instance installs and shows a consent link to send to the customer, then continues on its own once they approve.</li>
             </ul>
             <div class="connect-row">
@@ -83,7 +83,7 @@
           </div>
         </div>
         <div class="span2 create-only tenant-connect connect-box">
-          <p class="small" style="margin:0 0 10px">Sign in as a <b>Global Administrator</b> of the customer's tenant. The manager creates a "Prowler" app registration there with an auto-renewing certificate, then Microsoft asks you to approve Prowler's read-only permissions.</p>
+          <p class="small" style="margin:0 0 10px">Sign in as a <b>Privileged Role Administrator</b> of the customer's tenant (plus Application Developer or Cloud Application Administrator if users there can't register apps). Global Administrator is not required. The manager creates a "Prowler" app registration there with an auto-renewing certificate, then Microsoft asks you to approve Prowler's read-only permissions.</p>
           <div class="connect-row">
             <button type="button" class="btn primary" id="btn-connect">Connect Microsoft 365 tenant</button>
             <span id="connect-status" class="small muted"></span>
@@ -165,7 +165,7 @@
       <h3>MSP app</h3>
       <div id="msp-settings" class="connect-box small">
         <div id="msp-settings-missing">
-          <p style="margin:0 0 10px">Creates one multi-tenant "Prowler" app in <b>your</b> tenant, with the read-only permissions Prowler needs and an auto-renewing certificate. Each customer then approves it through an admin-consent link, or you approve it through GDAP. Sign in as a Global Administrator of your MSP tenant.</p>
+          <p style="margin:0 0 10px">Creates one multi-tenant "Prowler" app in <b>your</b> tenant, with the read-only permissions Prowler needs and an auto-renewing certificate. Each customer then approves it through an admin-consent link, or you approve it through GDAP. Sign in to your MSP tenant as a Privileged Role Administrator (plus Application Developer or Cloud Application Administrator if users can't register apps). Global Administrator is not required.</p>
           <div class="connect-row">
             <button type="button" class="btn primary" id="btn-msp-create">Create MSP app</button>
             <span id="msp-create-status" class="muted"></span>
@@ -231,7 +231,7 @@
   <!-- Approve MSP app for an existing instance -->
   <dialog id="dlg-approve">
     <h2 id="approve-title">Approve Prowler</h2>
-    <p class="small">Sign in as the customer's Global Administrator, or with your partner account through GDAP. Microsoft shows the permissions to approve; the manager then assigns the Global Reader role.</p>
+    <p class="small">Sign in as a Privileged Role Administrator of the customer's tenant, or with your partner account through GDAP with that role. Microsoft shows the permissions to approve; the manager then assigns the Global Reader role.</p>
     <p id="approve-status" class="small muted"></p>
     <ul id="approve-steps" class="steps small"></ul>
     <div class="dlg-actions">
@@ -242,7 +242,7 @@
   <!-- Connect Azure subscriptions -->
   <dialog id="dlg-azure">
     <h2 id="azure-title">Connect Azure subscriptions</h2>
-    <p class="small">Adds every enabled Azure subscription in this tenant to Prowler. Sign in as an <b>Owner</b> or <b>User Access Administrator</b> of the subscriptions. On each one the manager assigns the app the <b>Reader</b> role and Prowler's custom <b>ProwlerRole</b>, then registers the subscription in Prowler with a daily scan.</p>
+    <p class="small">Adds every enabled Azure subscription in this tenant to Prowler. Sign in as a <b>User Access Administrator</b> (or Owner) of the subscriptions. On each one the manager assigns the app the <b>Reader</b> role and Prowler's custom <b>ProwlerRole</b>, then registers the subscription in Prowler with a daily scan.</p>
     <p class="small muted" id="azure-secret-note"></p>
     <label class="hidden" id="azure-secret-row">App client secret<input id="azure-secret" type="password" autocomplete="off"></label>
     <p id="azure-status" class="small muted"></p>

@@ -13,9 +13,11 @@
 //
 // Prowler's Azure provider only accepts a client secret (no certificate). For certificate and MSP
 // instances the manager adds a password to the app registration itself (the app owns itself and has
-// Application.ReadWrite.OwnedBy, as for certificate renewal) and renews it before it expires. The
-// secret is only ever sent to Prowler; it is not written to disk. Instances that use a client secret
-// reuse that secret.
+// Application.ReadWrite.OwnedBy, as for certificate renewal) and renews it before it expires. If the
+// app can't (an existing registration without those rights), the admin's own sign-in adds the secret
+// when the registration is in the customer tenant, and makes the app able to renew it from then on.
+// The secret is only ever sent to Prowler; it is not written to disk. Instances that use a client
+// secret reuse that secret.
 import crypto from 'node:crypto';
 import * as store from './store.js';
 import * as prowler from './prowler.js';
@@ -31,6 +33,8 @@ const PROWLER_ROLE = 'ProwlerRole';
 const PROWLER_ACTIONS = ['Microsoft.Web/sites/host/listkeys/action', 'Microsoft.Web/sites/config/list/Action'];
 // Graph application permissions Prowler's Azure provider uses.
 const GRAPH_ROLES = ['AuditLog.Read.All', 'Directory.Read.All', 'Policy.Read.All'];
+const GRAPH_APP_ID = '00000003-0000-0000-c000-000000000000';
+const OWNED_BY = 'Application.ReadWrite.OwnedBy';
 const DAY = 86400000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -93,29 +97,71 @@ async function secretOwner(inst) {
   if (inst.authMethod === 'msp') {
     const m = msp.config();
     const app = new EntraApp({ tenantId: m.tenantId, clientId: m.clientId });
-    return { app, token: await app.token(await msp.currentCert()), appObjectId: m.appObjectId, label: m.displayName || 'the MSP app' };
+    return { app, token: await app.token(await msp.currentCert()), appObjectId: m.appObjectId, clientId: m.clientId, tenantId: m.tenantId, msp: true, label: m.displayName || 'the MSP app' };
   }
   if (inst.authMethod === 'certificate') {
     const app = new EntraApp(inst);
     const token = await app.token(await openCertificate(inst.cert.current));
     const appObjectId = inst.cert.appObjectId || (await app.application(token)).id;
-    return { app, token, appObjectId, label: `app ${inst.clientId}` };
+    return { app, token, appObjectId, clientId: inst.clientId, tenantId: inst.tenantId, label: `app ${inst.clientId}` };
   }
   return null;
 }
 
-const ownedByHint = ' (the app needs the Graph permission Application.ReadWrite.OwnedBy and must own its own registration; the certificate auto-renewal check shows whether it does)';
+const ownedByHint = (owner) => owner.msp
+  ? ' (the MSP app must own its own registration and have Application.ReadWrite.OwnedBy in the MSP tenant; open Settings → Re-approve MSP app, signed in to the MSP tenant, to restore that, then run Azure again)'
+  : ' (the app needs the Graph permission Application.ReadWrite.OwnedBy and must own its own registration; the certificate auto-renewal check shows whether it does)';
 
-async function addSecret(inst, owner) {
+async function addPassword(inst, owner, token) {
   const months = store.getSettings().certLifetimeMonths || 6;
   const end = new Date(Date.now() + months * 30 * DAY);
+  const r = await owner.app.graph(token, 'POST', `/applications/${owner.appObjectId}/addPassword`, {
+    passwordCredential: { displayName: `prowler-manage azure ${inst.slug}`, endDateTime: end.toISOString() },
+  });
+  return { keyId: r.keyId, secretText: r.secretText, expires: r.endDateTime };
+}
+
+/**
+ * Add the Azure client secret as the app itself. If the app may not (403) and its registration is in
+ * the customer tenant, `adminGraph` (the signed-in admin's Graph token) adds it instead, and repairs
+ * the app's self-ownership and OwnedBy so it can renew the secret itself. On fallback `owner.token`
+ * becomes the admin's token for the rest of the run.
+ */
+async function addSecret(inst, owner, adminGraph, log) {
   try {
-    const r = await owner.app.graph(owner.token, 'POST', `/applications/${owner.appObjectId}/addPassword`, {
-      passwordCredential: { displayName: `prowler-manage azure ${inst.slug}`, endDateTime: end.toISOString() },
-    });
-    return { keyId: r.keyId, secretText: r.secretText, expires: r.endDateTime };
+    return await addPassword(inst, owner, owner.token);
   } catch (e) {
-    throw new Error(`Could not add a client secret to ${owner.label}: ${e.message}${e.status === 403 ? ownedByHint : ''}`);
+    const prefix = `Could not add a client secret to ${owner.label}: ${e.message}`;
+    if (e.status !== 403) throw new Error(prefix);
+    if (!adminGraph || owner.tenantId !== inst.tenantId) throw new Error(prefix + ownedByHint(owner));
+    log(`${owner.label} may not add a client secret to itself; adding it with your sign-in instead`);
+  }
+  const token = await adminGraph();
+  let created;
+  try {
+    created = await addPassword(inst, owner, token);
+  } catch (e) {
+    throw new Error(`Could not add a client secret to ${owner.label} with your sign-in either: ${e.message}${e.status === 403 ? ' (sign in as an Application Administrator, Cloud Application Administrator or an owner of the app registration)' : ''}`);
+  }
+  owner.token = token;
+  await repairSelfRenewal(owner, token, log);
+  return created;
+}
+
+/** Make the app an owner of itself with Application.ReadWrite.OwnedBy, so it can renew its secret. */
+async function repairSelfRenewal(owner, token, log) {
+  const exists = (e) => /already exist/i.test(e.message);
+  try {
+    const sp = await owner.app.graph(token, 'GET', `/servicePrincipals(appId='${owner.clientId}')?$select=id`);
+    await owner.app.graph(token, 'POST', `/applications/${owner.appObjectId}/owners/$ref`, { '@odata.id': `https://graph.microsoft.com/v1.0/directoryObjects/${sp.id}` })
+      .catch((e) => { if (!exists(e)) throw e; });
+    const graphSp = await owner.app.graph(token, 'GET', `/servicePrincipals(appId='${GRAPH_APP_ID}')?$select=id,appRoles`);
+    const role = graphSp.appRoles.find((r) => r.value === OWNED_BY);
+    await owner.app.graph(token, 'POST', `/servicePrincipals/${graphSp.id}/appRoleAssignedTo`, { principalId: sp.id, resourceId: graphSp.id, appRoleId: role.id })
+      .catch((e) => { if (!exists(e)) throw e; });
+    log(`Allowed ${owner.label} to renew its own client secret (owner of itself + ${OWNED_BY})`);
+  } catch (e) {
+    log(`WARNING: could not let ${owner.label} renew its own client secret (${e.message}); automatic renewal will fail until it owns its registration and has ${OWNED_BY} (a Privileged Role Administrator can grant it), or run Azure again before the secret expires`);
   }
 }
 
@@ -211,7 +257,7 @@ async function assignRole(token, subId, roleId, principalId, label, log) {
  * Connect every enabled Azure subscription of the instance's tenant. `token` is the admin's
  * delegated Azure Resource Manager token; `step` reports progress.
  */
-export async function connect(inst, token, clientSecret, step) {
+export async function connect(inst, token, clientSecret, step, adminGraph) {
   const subs = (await arm(token, 'GET', '/subscriptions?api-version=2022-12-01')).value
     .filter((s) => s.tenantId === inst.tenantId && s.state === 'Enabled')
     .map((s) => ({ id: s.subscriptionId, name: s.displayName }));
@@ -248,7 +294,7 @@ export async function connect(inst, token, clientSecret, step) {
   let appSecret = null;
   const owner = await secretOwner(inst);
   if (owner) {
-    const created = await addSecret(inst, owner);
+    const created = await addSecret(inst, owner, adminGraph, step);
     step(`Added a client secret for Azure scanning to ${owner.label} (expires ${created.expires.slice(0, 10)}; renewed automatically)`);
     await waitForSecret(inst, clientId, created.secretText, step);
     secret = created.secretText;
@@ -272,7 +318,7 @@ export async function renewSecret(inst, log) {
   try {
     if (!(await prowler.isApiUp(inst))) throw new Error('Prowler is not running; the secret is renewed once it is');
     const owner = await secretOwner(inst);
-    const created = await addSecret(inst, owner);
+    const created = await addSecret(inst, owner, null, log);
     log(`Added a new Azure client secret (expires ${created.expires.slice(0, 10)})`);
     const { clientId } = await instanceApp(inst);
     await waitForSecret(inst, clientId, created.secretText, log);
