@@ -334,7 +334,8 @@ const azureSecret = (creds) => ({ tenant_id: creds.tenantId, client_id: creds.cl
 
 /**
  * Register Azure subscriptions as providers (uid = subscription ID) with the app's credentials, test
- * them and schedule daily scans. Idempotent; `known` holds the records of an earlier run.
+ * them and schedule daily scans. Idempotent; `known` holds the records of an earlier run. Providers or
+ * secrets removed in Prowler since then are found again or recreated.
  */
 export async function connectAzure(inst, subs, creds, known, log) {
   const api = new ProwlerApi(inst);
@@ -343,16 +344,20 @@ export async function connectAzure(inst, subs, creds, known, log) {
   for (const sub of subs) {
     const rec = { id: sub.id, name: sub.name, ...known.find((k) => k.id === sub.id) };
     const alias = `${inst.name} · ${sub.name}`;
-    if (!rec.providerId) {
+    // The provider as Prowler has it now (the saved one may have been deleted in Prowler UI).
+    let provider = rec.providerId ? await api.call('GET', `/providers/${rec.providerId}`).catch((e) => { if (e.status !== 404) throw e; return null; }) : null;
+    if (!provider) {
       const existing = await api.call('GET', `/providers?filter[provider]=azure&filter[uid]=${sub.id}`);
-      rec.providerId = existing.data?.[0]?.id
-        || (await api.call('POST', '/providers', { data: { type: 'providers', attributes: { provider: 'azure', uid: sub.id, alias } } })).data.id;
+      if (existing.data?.[0]) {
+        rec.providerId = existing.data[0].id;
+        provider = await api.call('GET', `/providers/${rec.providerId}`);
+      } else {
+        rec.providerId = (await api.call('POST', '/providers', { data: { type: 'providers', attributes: { provider: 'azure', uid: sub.id, alias } } })).data.id;
+        rec.schedule = false;
+      }
       log(`Prowler: registered Azure subscription ${sub.name}`);
     }
-    if (!rec.secretId) {
-      const provider = await api.call('GET', `/providers/${rec.providerId}`);
-      rec.secretId = provider.data?.relationships?.secret?.data?.id || null;
-    }
+    rec.secretId = provider?.data?.relationships?.secret?.data?.id || null;
     if (rec.secretId) {
       await api.call('PATCH', `/providers/secrets/${rec.secretId}`, {
         data: { type: 'provider-secrets', id: rec.secretId, attributes: { secret_type: 'static', secret: azureSecret(creds) } },
@@ -389,9 +394,14 @@ export async function updateAzureSecrets(inst, creds, log, api) {
   }
   for (const rec of inst.azure?.subscriptions || []) {
     if (!rec.secretId) continue;
-    await api.call('PATCH', `/providers/secrets/${rec.secretId}`, {
-      data: { type: 'provider-secrets', id: rec.secretId, attributes: { secret_type: 'static', secret: azureSecret(creds) } },
-    });
+    try {
+      await api.call('PATCH', `/providers/secrets/${rec.secretId}`, {
+        data: { type: 'provider-secrets', id: rec.secretId, attributes: { secret_type: 'static', secret: azureSecret(creds) } },
+      });
+    } catch (e) {
+      if (e.status !== 404) throw e;
+      log(`WARNING: Azure subscription ${rec.name} is no longer set up in Prowler; run Azure again to reconnect it`);
+    }
   }
   log(`Updated the Azure client secret in Prowler for ${inst.azure.subscriptions.length} subscription(s)`);
 }

@@ -143,6 +143,7 @@ sequenceDiagram
         end
     end
     Manager->>P: register azure providers, store secret, test, schedule daily scan
+    Note over Manager,P: providers or secrets deleted in Prowler since an earlier run are found again by subscription ID or recreated
     Note over Manager,Graph: renewal scheduler rotates the secret before expiry
 ```
 
