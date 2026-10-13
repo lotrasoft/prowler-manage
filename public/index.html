@@ -242,7 +242,7 @@
   <!-- Connect Azure subscriptions -->
   <dialog id="dlg-azure">
     <h2 id="azure-title">Connect Azure subscriptions</h2>
-    <p class="small">Adds every enabled Azure subscription in this tenant to Prowler. Sign in as a <b>User Access Administrator</b> (or Owner) of the subscriptions. On each one the manager assigns the app the <b>Reader</b> role and Prowler's custom <b>ProwlerRole</b>, then registers the subscription in Prowler with a daily scan.</p>
+    <p class="small" id="azure-intro">Adds every enabled Azure subscription in this tenant to Prowler. Sign in as a <b>User Access Administrator</b> (or Owner) of the subscriptions. On each one the manager assigns the app the <b>Reader</b> role and Prowler's custom <b>ProwlerRole</b>, then registers the subscription in Prowler with a daily scan.</p>
     <p class="small muted" id="azure-secret-note"></p>
     <label class="hidden" id="azure-secret-row">App client secret<input id="azure-secret" type="password" autocomplete="off"></label>
     <p id="azure-status" class="small muted"></p>

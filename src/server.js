@@ -252,6 +252,12 @@ app.get('/api/instances/:id/credentials', wrap(async (req, res) => {
   res.json({ email: inst.adminEmail, password: inst.adminPassword });
 }));
 
+// Whether the instance's app registration was deleted in Entra ID (the UI offers to recreate it).
+app.get('/api/instances/:id/app-status', wrap(async (req, res) => {
+  const inst = requireInstance(req.params.id);
+  res.json({ missing: await onboarding.appMissing(inst), clientId: inst.clientId, tenantDomain: inst.tenantDomain });
+}));
+
 app.get('/api/instances/:id/logs', wrap(async (req, res) => {
   const inst = store.getInstance(req.params.id);
   if (!inst) throw new HttpError(404, 'Instance not found');

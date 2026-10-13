@@ -16,6 +16,9 @@
 //
 // direct   Per customer, without the MSP app: a customer admin signs in, the manager creates a
 //          dedicated app registration in that tenant, then Microsoft's admin-consent page grants it.
+//          With an instanceId it recreates the app registration of an existing certificate instance
+//          whose app was deleted (the user confirms first), and switches the instance and its
+//          Prowler to the new app.
 //
 // azure    Per instance: an admin with Owner or User Access Administrator on the customer's Azure
 //          subscriptions signs in (Azure CLI's public client, Azure Resource Manager scope); the
@@ -31,6 +34,8 @@ import crypto from 'node:crypto';
 import * as store from './store.js';
 import * as msp from './msp.js';
 import * as azure from './azure.js';
+import * as prowler from './prowler.js';
+import { certCreds } from './renewal.js';
 import { isBusy } from './jobs.js';
 import { createCertificate, sealCertificate, openCertificate, EntraApp, jwtClaims } from './certs.js';
 
@@ -192,6 +197,15 @@ export async function startSession({ kind = 'direct', name, customer, instanceId
       throw new Error(`${s.base} is not a return address of the MSP app. Open Settings → Re-approve MSP app from this address once to register it, or use the manager from a registered address (${registered.filter((u) => !u.includes('nativeclient')).join(', ') || 'none'}).`);
     }
     s.redirect = pick;
+  } else if (kind === 'direct' && instanceId) {
+    // Recreate a deleted app registration for an existing instance.
+    const inst = store.getInstance(instanceId);
+    if (!inst) throw new Error('Instance not found');
+    if (isBusy(inst.id)) throw new Error('Another operation is running for this instance');
+    if (!(await appMissing(inst))) throw new Error(`App registration ${inst.clientId} still exists in ${inst.tenantDomain}; nothing to recreate`);
+    s.instanceId = inst.id;
+    s.name = inst.name;
+    s.authority = inst.tenantId;
   } else if (kind === 'azure') {
     const inst = store.getInstance(instanceId);
     if (!inst) throw new Error('Instance not found');
@@ -617,12 +631,31 @@ async function finishMspWithoutSignIn(s) {
 
 // ---------- direct: dedicated app registration in the customer tenant ----------
 
+/**
+ * Whether a certificate instance's app registration no longer exists in the customer tenant (deleted
+ * in Entra ID): Entra ID answers the app's own sign-in with AADSTS700016.
+ */
+export async function appMissing(inst) {
+  if (inst.authMethod !== 'certificate' || !inst.cert?.current?.verified) return false;
+  try {
+    await new EntraApp(inst).token(await openCertificate(inst.cert.current));
+    return false;
+  } catch (e) {
+    return e.aadCode === 700016;
+  }
+}
+
 async function directSetup(s) {
   s.tenantId = s.signInTenantId;
   await organization(s);
   step(s, `Tenant: ${s.orgName} (${s.tenantDomain})`);
+  if (s.instanceId) {
+    const inst = store.getInstance(s.instanceId);
+    if (!inst) throw new Error('Instance not found');
+    if (s.tenantId !== inst.tenantId) throw new Error(`Sign in to ${inst.tenantDomain}; you signed in to ${s.tenantDomain}`);
+  }
   const existing = store.listInstances().find((i) => i.tenantId === s.tenantId);
-  if (existing) throw new Error(`This tenant already has an instance ("${existing.name}")`);
+  if (existing && existing.id !== s.instanceId) throw new Error(`This tenant already has an instance ("${existing.name}")`);
 
   const { access } = await resourceAccess(s, { includeOwnedBy: true });
   const { certLifetimeMonths } = store.getSettings();
@@ -682,9 +715,39 @@ async function waitForAppRoles(s, cert) {
 
 async function waitForPermissions(s) {
   s.token = null;
-  await waitForAppRoles(s, await openCertificate(s.cert));
+  const cert = await openCertificate(s.cert);
+  await waitForAppRoles(s, cert);
+  if (s.instanceId) await replaceInstanceApp(s, cert);
   step(s, 'Tenant connected');
   done(s);
+}
+
+/** Recreated app registration: switch the instance, and its Prowler, to the new app and certificate. */
+async function replaceInstanceApp(s, cert) {
+  const inst = store.getInstance(s.instanceId);
+  if (!inst) throw new Error('Instance not found');
+  const oldClientId = inst.clientId;
+  let updated = store.patchInstance(inst.id, {
+    clientId: s.clientId,
+    appCreatedByManager: true,
+    cert: { appObjectId: s.appObjectId, current: { ...s.cert, verified: true, verifiedAt: new Date().toISOString(), prowlerSynced: false } },
+    // The Azure client secret belonged to the deleted app; connecting Azure again adds a new one.
+    ...(inst.azure ? { azure: { ...inst.azure, appSecret: null, renewError: null } } : {}),
+  });
+  step(s, `Instance switched from the deleted app ${oldClientId} to ${s.clientId}`);
+  try {
+    if (!(await prowler.isApiUp(updated))) {
+      step(s, 'Prowler is not running; it receives the new app on the next Launch');
+    } else {
+      await prowler.updateCredentials(updated, certCreds(updated, cert), (t) => step(s, `Prowler: ${t}`));
+      updated = store.patchInstance(inst.id, { cert: { ...updated.cert, current: { ...updated.cert.current, prowlerSynced: true } } });
+    }
+  } catch (e) {
+    step(s, `WARNING: could not update Prowler (${e.message}); it receives the new app on the next Launch`);
+  }
+  if (inst.azure?.subscriptions?.length) {
+    step(s, 'Azure subscriptions need the new app: run Azure again to assign its roles and update Prowler');
+  }
 }
 
 // ---------- azure: roles on the customer's Azure subscriptions ----------

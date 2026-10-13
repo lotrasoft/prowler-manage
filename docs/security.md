@@ -20,7 +20,7 @@ The manager supports different tenant connection models in [src/server.js](../sr
 - dedicated customer app; 
 - existing app registration.
 
-Each mode is designed to require explicit consent and to assign roles such as Global Reader only after approval. Default patterns are described in [README.md](../README.md).
+Each mode is designed to require explicit consent and to assign roles such as Global Reader only after approval. If a dedicated app registration is deleted in Entra ID, the manager never recreates it silently. The Azure dialog reports the missing app, and a new registration is created only after the user confirms and a Privileged Role Administrator signs in to that tenant (the same `direct` flow and permissions as first-time setup). The server checks that the old app really is gone (`AADSTS700016`) before it starts. Role assignments the deleted service principal held on Azure subscriptions stay behind as "Identity not found" entries; remove them under Access control (IAM). Default patterns are described in [README.md](../README.md).
 
 Least privilege (full table in the README's *Least privilege* section):
 

@@ -92,6 +92,29 @@ sequenceDiagram
     Manager-->>Admin: proceed to instance launch
 ```
 
+**Recreating a deleted app registration.** If the dedicated app registration of a certificate instance is deleted in Entra ID, the app's own sign-in fails with `AADSTS700016`. The **Azure** dialog checks for this first (`GET /api/instances/:id/app-status`), and so does a failed Azure sign-in. When the app is missing, the dialog says so and offers **Create new app registration**. Nothing is created until the user clicks that button. The click starts the `direct` flow with the instance's ID. The server checks again that the app is really missing, and the sign-in must be to the instance's tenant. The flow then creates a new app registration (same permissions, new certificate, self-ownership, Global Reader) and runs admin consent. After that the instance switches to the new client ID and certificate, and Prowler's M365 provider secret is updated, or on the next Launch if Prowler is down. The old Azure client secret record is dropped because it belonged to the deleted app. Running **Azure** again assigns roles to the new service principal and updates the Azure providers in Prowler.
+
+```mermaid
+sequenceDiagram
+    participant Admin as Privileged Role Admin
+    participant UI as Manager UI
+    participant Manager as Manager
+    participant Graph as Entra Graph
+    participant P as Prowler
+
+    Admin->>UI: Azure (row action)
+    UI->>Manager: GET /api/instances/:id/app-status
+    Manager->>Graph: app-only token with the instance certificate
+    Graph-->>Manager: AADSTS700016 (app not found)
+    UI-->>Admin: "App registration missing. Create a new one?"
+    Admin->>UI: Create new app registration (confirm)
+    UI->>Manager: direct sign-in with instanceId
+    Manager->>Graph: create app + SP, owner of itself, Global Reader, admin consent
+    Manager->>Manager: instance.clientId / cert = new app; azure.appSecret = null
+    Manager->>P: update M365 provider secret (or on next Launch)
+    UI-->>Admin: back to "Sign in to Azure"
+```
+
 ## 5. Azure subscription onboarding
 The **Azure** row action is implemented in [src/azure.js](../src/azure.js), started through the `azure` sign-in kind in [src/onboarding.js](../src/onboarding.js).
 

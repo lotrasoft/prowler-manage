@@ -422,40 +422,82 @@ function approveInstance(inst) {
 $('#dlg-approve').addEventListener('close', () => approveStop?.());
 
 // "Azure" on a ready instance: assign Prowler's roles on the tenant's Azure subscriptions (src/azure.js).
+// If the instance's app registration was deleted, the dialog first asks to recreate it.
 let azureStop = null;
 let azureInst = null;
+let azureRecreate = false;
+function setAzureMode(inst, recreate) {
+  azureRecreate = recreate;
+  const secretMode = !recreate && inst.credential?.method === 'secret';
+  $('#azure-title').textContent = recreate ? `App registration missing · ${inst.name}` : `Connect Azure subscriptions · ${inst.name}`;
+  $('#azure-intro').classList.toggle('hidden', recreate);
+  $('#azure-secret-row').classList.toggle('hidden', !secretMode);
+  $('#azure-secret-note').textContent = recreate
+    ? `The app registration ${inst.clientId} that Prowler uses no longer exists in ${inst.tenantDomain}. Create a new one? The manager creates it with the same permissions and a new certificate, assigns Global Reader, asks you to approve its permissions, and switches this Prowler instance to it. Sign in as a Privileged Role Administrator of ${inst.tenantDomain} (plus Application Developer or Cloud Application Administrator if users there can't register apps).`
+    : secretMode
+      ? "Prowler's Azure provider uses the same app and client secret as Microsoft 365. Enter the secret again; it is sent to Prowler only."
+      : "Prowler's Azure provider only accepts a client secret, so the manager adds one to the app registration and renews it before it expires. It is sent to Prowler only.";
+  $('#azure-secret-note').className = recreate ? 'small error-inline' : 'small muted';
+  $('#btn-azure-start').textContent = recreate ? 'Create new app registration' : 'Sign in to Azure';
+  $('#btn-azure-start').disabled = false;
+}
+/** Switch the dialog to "recreate" if the instance's app registration was deleted. */
+async function checkAzureApp(inst) {
+  try {
+    const r = await api('GET', `/api/instances/${inst.id}/app-status`);
+    if (r.missing && azureInst === inst) setAzureMode(inst, true);
+    return r.missing;
+  } catch {
+    return false;
+  }
+}
 function openAzure(inst) {
   azureStop?.();
   azureInst = inst;
-  const secretMode = inst.credential?.method === 'secret';
-  $('#azure-title').textContent = `Connect Azure subscriptions · ${inst.name}`;
-  $('#azure-secret-row').classList.toggle('hidden', !secretMode);
+  setAzureMode(inst, false);
   $('#azure-secret').value = '';
-  $('#azure-secret-note').textContent = secretMode
-    ? "Prowler's Azure provider uses the same app and client secret as Microsoft 365. Enter the secret again; it is sent to Prowler only."
-    : "Prowler's Azure provider only accepts a client secret, so the manager adds one to the app registration and renews it before it expires. It is sent to Prowler only.";
   const n = inst.azure?.subscriptions?.length;
   $('#azure-status').textContent = n ? `Connected: ${inst.azure.subscriptions.map((s) => s.name).join(', ')}. Run again to add new subscriptions or repair roles.` : '';
   $('#azure-status').className = 'small muted';
   $('#azure-steps').replaceChildren();
-  $('#btn-azure-start').disabled = false;
   $('#dlg-azure').showModal();
+  if (inst.credential?.method === 'certificate') {
+    $('#btn-azure-start').disabled = true;
+    checkAzureApp(inst).finally(() => {
+      if (azureInst === inst) $('#btn-azure-start').disabled = false;
+    });
+  }
 }
 $('#btn-azure-start').addEventListener('click', () => {
   const inst = azureInst;
+  azureStop?.();
+  if (azureRecreate) {
+    // The dialog text is the confirmation; clicking the button confirms it.
+    $('#btn-azure-start').disabled = true;
+    azureStop = popupSession({ kind: 'direct', instanceId: inst.id }, (s) => {
+      if (renderSession(s, $('#azure-status'), $('#azure-steps'), () => 'New app registration created and Prowler switched to it. Now sign in to Azure to connect the subscriptions.')) {
+        setAzureMode(inst, false);
+        refresh();
+      } else if (s.status === 'error') $('#btn-azure-start').disabled = false;
+    });
+    return;
+  }
   const clientSecret = $('#azure-secret').value;
   if (inst.credential?.method === 'secret' && !clientSecret) {
     $('#azure-status').textContent = "Enter the app's client secret first";
     $('#azure-status').className = 'small error-inline';
     return;
   }
-  azureStop?.();
   $('#btn-azure-start').disabled = true;
   azureStop = popupSession({ kind: 'azure', instanceId: inst.id, clientSecret }, (s) => {
     if (renderSession(s, $('#azure-status'), $('#azure-steps'), () => 'Azure subscriptions connected. The first scans are starting in Prowler.')) {
       $('#azure-secret').value = '';
       refresh();
-    } else if (s.status === 'error') $('#btn-azure-start').disabled = false;
+    } else if (s.status === 'error') {
+      $('#btn-azure-start').disabled = false;
+      // AADSTS700016: the app registration was deleted; offer to recreate it.
+      if (/AADSTS700016/.test(s.error || '') && inst.credential?.method === 'certificate') checkAzureApp(inst);
+    }
   });
 });
 $('#dlg-azure').addEventListener('close', () => {
